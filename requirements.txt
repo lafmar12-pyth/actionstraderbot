@@ -1,0 +1,6 @@
+ccxt
+matplotlib
+numpy
+google-generativeai
+requests
+openai
