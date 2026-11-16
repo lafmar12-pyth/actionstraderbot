@@ -25,7 +25,7 @@ def safe_api_call(max_retries=3, delay=3):
 def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
     """Interroge Gemini avec gestion spécifique des timeouts 504/503."""
     genai.configure(api_key=gemini_key)
-    g_model = genai.GenerativeModel('gemini-2.5-flash')
+    g_model = genai.GenerativeModel('gemini-3.8-flash')
     
     for attempt in range(1, max_retries + 1):
         try:
