@@ -55,14 +55,16 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
     - Actif candidat : {symbol} à {price}$
     - Score technique (Calculs) : {score}/100 ({reason})
     - Tendance globale (Macro) : {trend}
-    - Règle de positionnement : Le capital engagé est strictement limité à 2% du portefeuille total.
-    - Horizon temporel : La prochaine fenêtre d'analyse et de réévaluation du bot se fera lors du prochain cycle. L'IA doit donc évaluer si le risque et le momentum permettent de tenir ou de capter un mouvement de swing trading.
-    - Historique récent : {recent_history}
-    - Mémoire des erreurs passées : {memory_summary}
+    - Règle de positionnement : 2% du portefeuille par tranche (pyramiding progressif autorisé jusqu'à 8% max par action en 4 tranches, plafond global 40%).
+    - Horizon temporel : Swing trading multi-jours (holding minimum 1 jour pour éviter le Pattern Day Trading). L'IA doit évaluer si le risque et le momentum permettent de capter un mouvement haussier.
+    - Positions déjà en portefeuille : {recent_history}
+    - Consignes de vigilance : {memory_summary}
     
     Règles strictes :
-    Si la configuration présente un risque de faux signal ou contredit la mémoire des pertes passées, réponds VETO. 
-    Sinon, réponds VALIDÉ.
+    1. Si la configuration présente un risque de faux signal ou contredit la mémoire des pertes passées, réponds VETO.
+    2. Si tu as connaissance d'une publication de résultats financiers (Earnings) ou d'un événement majeur sur cette entreprise dans les 48 prochaines heures (risque de gap à l'ouverture), réponds VETO.
+    3. S'il s'agit d'un renforcement (pyramiding), vérifie que le momentum est suffisamment fort pour justifier d'augmenter l'exposition.
+    4. Sinon, réponds VALIDÉ.
     
     Format de réponse strict :
     DECISION: [VALIDÉ ou VETO]
