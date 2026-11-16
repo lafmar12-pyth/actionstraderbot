@@ -5,8 +5,11 @@ permissions:
 
 on:
   schedule:
-    # S'exécute du Lundi au Vendredi à 14h00, 17h00 et 19h45 UTC (adapté aux heures boursières US/Canada)
-    - cron: '0 14,17 * * 1-5'
+    # 14h35 UTC = 9h35 EST (5 min après l'ouverture US/Canada en heure d'hiver)
+    # 17h00 UTC = 12h00 EST (mi-journée)
+    # 19h45 UTC = 14h45 EST (1h15 avant la clôture de 16h00 EST)
+    - cron: '35 14 * * 1-5'
+    - cron: '0 17 * * 1-5'
     - cron: '45 19 * * 1-5'
   workflow_dispatch:
 
@@ -46,3 +49,14 @@ jobs:
           git add stock_bot_state.json || true
           git commit -m "Auto: Update stock bot state [skip ci]" || true
           git push origin main || echo "⚠️ Pas de changement d'état à commiter."
+
+      - name: Notify Telegram on Workflow Failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="❌ *Échec critique du workflow GitHub Actions* (Stock Swing Trading Bot). Vérifiez les logs sur GitHub."
