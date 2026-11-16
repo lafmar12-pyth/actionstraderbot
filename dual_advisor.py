@@ -51,12 +51,12 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
     Interroge Gemini et OpenAI avec protection réseau, secours quantitatif et alerte Telegram sur erreur.
     """
     prompt = f"""
-    En tant que comité des risques senior d'un fonds quantitatif crypto, analyse cette décision d'investissement à court terme :
+    En tant que comité des risques senior d'un fonds quantitatif actions, analyse cette décision d'investissement à court terme :
     - Actif candidat : {symbol} à {price}$
     - Score technique (Calculs) : {score}/100 ({reason})
-    - Tendance globale (Macro BTC) : {trend}
-    - Règle de positionnement : Le capital engagé est strictement limité à 1.6% du portefeuille total.
-    - Horizon temporel : La prochaine fenêtre d'analyse et de réévaluation du bot se fera exactement dans 1h30. L'IA doit donc évaluer si le risque et le momentum permettent de tenir ou de capter un mouvement sur cette fenêtre de 1h30.
+    - Tendance globale (Macro) : {trend}
+    - Règle de positionnement : Le capital engagé est strictement limité à 2% du portefeuille total.
+    - Horizon temporel : La prochaine fenêtre d'analyse et de réévaluation du bot se fera lors du prochain cycle. L'IA doit donc évaluer si le risque et le momentum permettent de tenir ou de capter un mouvement de swing trading.
     - Historique récent : {recent_history}
     - Mémoire des erreurs passées : {memory_summary}
     
@@ -76,7 +76,7 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
         gemini_decision, gemini_reason, gemini_api_failed = _query_gemini_with_retry(prompt, gemini_key)
     
     if gemini_api_failed:
-        send_ai_error_alert("Gemini", symbol, gemini_reason)
+        send_ai_error_alert("Gemini", f"[{symbol}] {gemini_reason}")
 
     # 2. Avis d'OpenAI (ChatGPT)
     openai_decision, openai_reason, openai_api_failed = "VETO", "Clé API OPENAI_API_KEY absente", True
@@ -84,7 +84,7 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
     if openai_key:
         for attempt in range(1, 3):
             try:
-                client = OpenAI(api_key=openai_key, timeout=25.0)
+                client = OpenAI(api_key=openai_key)
                 o_resp = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
@@ -103,7 +103,7 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
                 openai_api_failed = True
 
     if openai_api_failed:
-        send_ai_error_alert("OpenAI", symbol, openai_reason)
+        send_ai_error_alert("OpenAI", f"[{symbol}] {openai_reason}")
 
     # 3. Affichage des rapports et Arbitrage du Double Check
     print(f"\n💬 [Comité Gemini] : {gemini_reason}", flush=True)
