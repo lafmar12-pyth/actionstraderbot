@@ -88,12 +88,29 @@ class StockSwingEngine:
         })
         return df
 
+    def get_market_macro_trend(self) -> str:
+        """Évalue la tendance générale du marché via l'ETF S&P 500 (SPY)."""
+        try:
+            spy_df = self.get_historical_bars("SPY", calendar_days=45)
+            if len(spy_df) >= 20:
+                spy_sma20 = spy_df['Close'].rolling(window=20).mean().iloc[-1]
+                spy_close = float(spy_df['Close'].iloc[-1])
+                diff_pct = ((spy_close - spy_sma20) / spy_sma20) * 100
+                if spy_close > spy_sma20:
+                    return f"HAUSSIER (SPY à {spy_close:.2f}$, {diff_pct:+.2f}% au-dessus de SMA20)"
+                else:
+                    return f"BAISSIER / PRUDENCE (SPY à {spy_close:.2f}$, {diff_pct:+.2f}% sous SMA20)"
+        except Exception as e:
+            print(f"⚠️ Impossible de récupérer la tendance SPY : {e}")
+        return "NEUTRE_BOURSE"
+
     def evaluate_stock_opportunity(self, df):
         if len(df) < 50:
             return 0, f"Données insuffisantes ({len(df)} bougies)"
 
         df['SMA20'] = df['Close'].rolling(window=20).mean()
         df['SMA50'] = df['Close'].rolling(window=50).mean()
+        df['VOL20'] = df['Volume'].rolling(window=20).mean()
         
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -118,10 +135,15 @@ class StockSwingEngine:
             score += 30
             reasons.append(f"RSI optimal ({last_row['RSI']:.1f})")
 
+        # Calcul du ratio de volume pour l'analyse IA
+        avg_vol = last_row['VOL20']
+        vol_ratio = (last_row['Volume'] / avg_vol) if pd.notna(avg_vol) and avg_vol > 0 else 1.0
+        reasons.append(f"Volume: {vol_ratio:.1f}x moy. 20j")
+
         return score, " | ".join(reasons) if reasons else "Pas de signal"
 
     def _cancel_open_orders_for_symbol(self, symbol: str):
-        """Annule les ordres Stop/Trailing liés avant de clôturer manuellement une position."""
+        """Annule les ordres Stop/Trailing liés avant de clôturer ou d'ajuster une position."""
         orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
         for order in orders:
             try:
@@ -146,7 +168,7 @@ class StockSwingEngine:
             weight_pct = (market_value / total_portfolio) * 100 if total_portfolio > 0 else 0
             tranches_est = max(1, round(weight_pct / (self.tranche_pct * 100)))
 
-            # --- CORRECTION #1 : STOP-LOSS DYNAMIQUE (BREAK-EVEN) ---
+            # Stop-Loss dynamique selon le palier de pyramiding
             if tranches_est >= 3:
                 dynamic_sl = 0.00   # Break-Even (0%) dès 6% ou 8% d'exposition
             elif tranches_est == 2:
@@ -156,7 +178,7 @@ class StockSwingEngine:
 
             print(f"   • {symbol:6} | Palier {tranches_est}/4 ({weight_pct:4.1f}%) | P&L: {unrealized_plpc*100:+6.2f}% | SL actif: {dynamic_sl*100:+.1f}%")
 
-            # --- CORRECTION #3 : PROTECTION ANTI-DAY TRADING (PDT) ---
+            # Protection Anti-Day Trading (PDT)
             last_buy_date = self.trade_history.get("last_buy_dates", {}).get(symbol)
             if last_buy_date == today_str and unrealized_plpc > -0.05:
                 print(f"     ⏳ Position ouverte aujourd'hui ({today_str}) : maintien jusqu'à demain (Règle Swing / Anti-PDT).")
@@ -166,6 +188,7 @@ class StockSwingEngine:
                 print(f"   🎯 TAKE-PROFIT atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !")
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
+                self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
                 send_telegram_alert(f"🎯 *TAKE-PROFIT* sur `{symbol}` : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`)")
                 closed_count += 1
 
@@ -174,6 +197,7 @@ class StockSwingEngine:
                 print(f"   🛑 {sl_type} atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !")
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
+                self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
                 send_telegram_alert(f"🛑 *{sl_type}* sur `{symbol}` (Palier {tranches_est}/4) : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`)")
                 closed_count += 1
 
@@ -197,7 +221,7 @@ class StockSwingEngine:
         if self.manage_open_positions(open_positions, total_portfolio) > 0:
             open_positions = self.trading_client.get_all_positions()
 
-        # --- CORRECTION #2 : VÉRIFICATION DES ORDRES D'ACHAT EN ATTENTE ---
+        # Vérification des ordres d'achat en attente
         open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
         pending_buy_symbols = {o.symbol for o in open_orders if o.side == OrderSide.BUY}
 
@@ -205,8 +229,12 @@ class StockSwingEngine:
         current_invested = sum(float(pos.market_value) for pos in open_positions)
         current_exposure_pct = (current_invested / total_portfolio) * 100 if total_portfolio > 0 else 0
 
+        # Météo macroéconomique via SPY
+        market_trend = self.get_market_macro_trend()
+
         print(f"\n💰 Portefeuille : {total_portfolio:.2f} $ | Tranche (2%) : {tranche_capital:.2f} $")
         print(f"📊 Exposition globale : {current_invested:.2f} $ ({current_exposure_pct:.1f}% / 40.0% max)")
+        print(f"🌍 Météo Marché : {market_trend}")
 
         if (current_invested + tranche_capital) > max_exposure_capital:
             print("🛑 Plafond global de 40% atteint. Aucun nouvel achat.", flush=True)
@@ -267,8 +295,8 @@ class StockSwingEngine:
 
             decision, feedback = ask_dual_ai_decision(
                 clean_symbol, best_choice['price'], min(100, best_choice['score']),
-                best_choice['reason'], "NEUTRE_BOURSE", list(positions_map.keys()),
-                "Vérifier absence d'annonce de résultats (Earnings) imminente."
+                best_choice['reason'], market_trend, list(positions_map.keys()),
+                "Vérifier corrélation sectorielle, volume relatif et absence d'Earnings sous 48h."
             )
 
             if decision == "VALIDÉ":
@@ -281,14 +309,14 @@ class StockSwingEngine:
                 )
                 self.trading_client.submit_order(order_data=market_order_data)
 
-                # --- CORRECTION #4 : TRAILING STOP PERMANENT CHEZ ALPACA ---
-                # Protège contre les krachs/gaps entre deux cycles du bot (sur actions entières)
+                # 2. Trailing Stop permanent chez Alpaca (resserré à 1.5% dès le palier 2/4)
                 whole_qty = int(qty_to_buy)
+                trail_pct = 1.5 if best_choice['tranche_num'] >= 2 else 3.0
                 if whole_qty >= 1:
                     try:
                         trailing_stop = TrailingStopOrderRequest(
                             symbol=clean_symbol, qty=whole_qty, side=OrderSide.SELL,
-                            time_in_force=TimeInForce.GTC, trail_percent=3.0
+                            time_in_force=TimeInForce.GTC, trail_percent=trail_pct
                         )
                         self.trading_client.submit_order(order_data=trailing_stop)
                     except Exception as e:
