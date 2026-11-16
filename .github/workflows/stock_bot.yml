@@ -1,5 +1,8 @@
 name: Stock Swing Trading Bot
 
+permissions:
+  contents: write
+
 on:
   schedule:
     # S'exécute du Lundi au Vendredi à 14h00, 17h00 et 19h45 UTC (adapté aux heures boursières US/Canada)
