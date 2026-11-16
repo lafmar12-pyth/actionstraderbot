@@ -1,6 +1,5 @@
-alpaca-py==0.34.0
-yfinance==0.2.51
-pandas==2.2.3
-google-generativeai==0.8.3
-openai==1.55.0
-requests==2.32.3
+alpaca-py>=0.38.0
+pandas>=2.2.3
+google-generativeai>=0.8.4
+openai>=1.65.0
+requests>=2.32.3
