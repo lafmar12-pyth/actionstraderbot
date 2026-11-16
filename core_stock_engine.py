@@ -147,7 +147,7 @@ class StockSwingEngine:
             unrealized_pl = float(pos.unrealized_pl)
             market_value = float(pos.market_value)
 
-            print(f"   • {symbol:6} | Valeur: {market_value:8.2f}$\vert{} P&L: {unrealized_plpc*100:+6.2f}\% ({unrealized_pl:+.2f}$)")
+            print(f"   • {symbol:6} | Valeur: {market_value:8.2f}$ | P&L: {unrealized_plpc*100:+6.2f}% ({unrealized_pl:+.2f}$)")
 
             if unrealized_plpc >= self.take_profit_pct:
                 print(f"   🎯 TAKE-PROFIT atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !")
@@ -188,5 +188,89 @@ class StockSwingEngine:
         current_invested = sum(float(pos.market_value) for pos in open_positions)
         current_exposure_pct = (current_invested / total_portfolio) * 100 if total_portfolio > 0 else 0
 
-        print(f"\n💰 Portefeuille total : {total_portfolio:.2f} $\vert{} Allocation/trade (2\%) : {allocated_capital:.2f}$")
-        print(f"📊 Exposition actuelle : {
+        print(f"\n💰 Portefeuille total : {total_portfolio:.2f} $ | Allocation/trade (2%) : {allocated_capital:.2f} $")
+        print(f"📊 Exposition actuelle : {current_invested:.2f} $ ({current_exposure_pct:.1f}% / 40.0% max) | Positions actives : {len(held_symbols)}")
+
+        # 4. Vérification du plafond de 40% d'utilisation du capital
+        if (current_invested + allocated_capital) > max_exposure_capital:
+            print("🛑 Plafond de 40% d'utilisation du capital atteint. Aucun nouvel achat sur ce cycle.", flush=True)
+            self.save_state()
+            return
+
+        candidates = []
+
+        # 5. Scan des actions (en ignorant celles déjà détenues)
+        print(f"\n🔍 Scan des {len(self.symbols)} actions de la watchlist...", flush=True)
+        for symbol in self.symbols:
+            if symbol in held_symbols:
+                print(f"   • {symbol:10} | Déjà en portefeuille (ignoré)")
+                continue
+
+            try:
+                df = self.get_historical_bars(symbol, calendar_days=90)
+                if df.empty:
+                    continue
+
+                current_price = float(df['Close'].iloc[-1])
+                score, reason = self.evaluate_stock_opportunity(df)
+
+                print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | Score: {score:3}/100 | {reason}")
+
+                if score >= 65:
+                    candidates.append({
+                        'symbol': symbol,
+                        'price': current_price,
+                        'score': score,
+                        'reason': reason
+                    })
+            except Exception as e:
+                print(f"   ⚠️ Erreur d'analyse sur {symbol}: {e}")
+
+        # 6. Comité d'IA et Exécution de l'Ordre
+        if candidates:
+            candidates.sort(key=lambda x: x['score'], reverse=True)
+            best_choice = candidates[0]
+            clean_symbol = best_choice['symbol']
+
+            print(f"\n🧠 Soumission du dossier Swing {clean_symbol} au comité multi-IA...")
+
+            decision, feedback = ask_dual_ai_decision(
+                clean_symbol,
+                best_choice['price'],
+                best_choice['score'],
+                best_choice['reason'],
+                "NEUTRE_BOURSE",
+                held_symbols,
+                "Pas de leçon récente"
+            )
+
+            if decision == "VALIDÉ":
+                qty_to_buy = round(allocated_capital / best_choice['price'], 2)
+                print(f"🔥 Exécution de l'ordre d'achat Alpaca : {qty_to_buy} actions de {clean_symbol} (~{allocated_capital:.2f}$)")
+                
+                market_order_data = MarketOrderRequest(
+                    symbol=clean_symbol,
+                    qty=qty_to_buy,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY
+                )
+                
+                self.trading_client.submit_order(order_data=market_order_data)
+                
+                self.trade_history["trades"].append({
+                    "date": datetime.now(timezone.utc).isoformat(),
+                    "symbol": clean_symbol,
+                    "qty": qty_to_buy,
+                    "price": best_choice['price'],
+                    "allocated": round(allocated_capital, 2)
+                })
+                
+                send_telegram_alert(
+                    f"📈 *ACHAT EXÉCUTÉ* : `{qty_to_buy}` actions de `{clean_symbol}` à `{best_choice['price']:.2f}$`\n"
+                    f"• Montant : `{allocated_capital:.2f}$` (2%)\n"
+                    f"• Exposition globale : `{(current_invested + allocated_capital)/total_portfolio*100:.1f}% / 40%`"
+                )
+            else:
+                print(f"🛡️ [VETO IA] Ordre annulé : {feedback}")
+
+        self.save_state()
