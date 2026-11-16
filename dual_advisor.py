@@ -22,6 +22,14 @@ def safe_api_call(max_retries=3, delay=3):
         return wrapper
     return decorator
 
+def _parse_ai_decision(text: str) -> str:
+    """Extrait proprement VALIDÉ ou VETO depuis la ligne DECISION de l'IA."""
+    for line in text.splitlines():
+        clean_line = line.strip().upper()
+        if clean_line.startswith("DECISION"):
+            return "VALIDÉ" if "VALIDÉ" in clean_line else "VETO"
+    return "VALIDÉ" if "VALIDÉ" in text.upper() else "VETO"
+
 def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
     """Interroge Gemini avec gestion spécifique des timeouts 504/503."""
     genai.configure(api_key=gemini_key)
@@ -34,7 +42,7 @@ def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
                 request_options={"timeout": 25}
             )
             text = g_resp.text.strip()
-            decision = "VALIDÉ" if "VALIDÉ" in text.upper() else "VETO"
+            decision = _parse_ai_decision(text)
             return decision, text, False
         except Exception as e:
             err_str = str(e)
@@ -48,27 +56,29 @@ def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
 
 def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, memory_summary):
     """
-    Interroge Gemini et OpenAI avec protection réseau, secours quantitatif et alerte Telegram sur erreur.
+    Interroge Gemini et OpenAI avec audit macro/sectoriel, secours quantitatif et alerte Telegram sur erreur.
     """
     prompt = f"""
-    En tant que comité des risques senior d'un fonds quantitatif actions, analyse cette décision d'investissement à court terme :
+    En tant que comité des risques senior d'un fonds quantitatif actions (US & Canada), analyse cette décision de swing trading :
     - Actif candidat : {symbol} à {price}$
-    - Score technique (Calculs) : {score}/100 ({reason})
-    - Tendance globale (Macro) : {trend}
-    - Règle de positionnement : 2% du portefeuille par tranche (pyramiding progressif autorisé jusqu'à 8% max par action en 4 tranches, plafond global 40%).
-    - Horizon temporel : Swing trading multi-jours (holding minimum 1 jour pour éviter le Pattern Day Trading). L'IA doit évaluer si le risque et le momentum permettent de capter un mouvement haussier.
-    - Positions déjà en portefeuille : {recent_history}
+    - Signaux techniques & Volume : {score}/100 ({reason})
+    - Tendance générale du marché (S&P 500) : {trend}
+    - Règle de gestion : 2% du portefeuille par tranche (pyramiding progressif autorisé jusqu'à 8% max par action en 4 tranches, plafond global 40%).
+    - Horizon temporel : Swing trading multi-jours (holding minimum 1 jour pour éviter le Pattern Day Trading).
+    - Positions déjà ouvertes en portefeuille : {recent_history}
     - Consignes de vigilance : {memory_summary}
     
-    Règles strictes :
-    1. Si la configuration présente un risque de faux signal ou contredit la mémoire des pertes passées, réponds VETO.
-    2. Si tu as connaissance d'une publication de résultats financiers (Earnings) ou d'un événement majeur sur cette entreprise dans les 48 prochaines heures (risque de gap à l'ouverture), réponds VETO.
-    3. S'il s'agit d'un renforcement (pyramiding), vérifie que le momentum est suffisamment fort pour justifier d'augmenter l'exposition.
-    4. Sinon, réponds VALIDÉ.
+    Checklist d'audit obligatoire avant validation :
+    1. CORRÉLATION SECTORIELLE : L'ajout de {symbol} crée-t-il une concentration excessive sur un même secteur par rapport aux positions déjà ouvertes ({recent_history}) ? (Ex: éviter d'accumuler trop de valeurs Tech/Semi-conducteurs ou trop de Banques canadiennes simultanément).
+    2. CALENDRIER ENTREPRISE & MACRO : Y a-t-il une publication de résultats financiers (Earnings) sur {symbol} ou une annonce majeure (Fed, Banque du Canada, CPI) dans les prochaines 48h ?
+    3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ : Si le marché global ({trend}) est baissier ou si le volume relatif est faible (inférieur à 0.8x la moyenne 20j), le signal est-il suffisamment robuste ?
+    4. QUALITÉ DU RENFORCEMENT : S'il s'agit d'un pyramiding, le momentum justifie-t-il réellement d'augmenter la taille de la position ?
+
+    Règle de décision : Si l'un des 4 points présente un risque élevé, réponds VETO. Sinon, réponds VALIDÉ.
     
     Format de réponse strict :
     DECISION: [VALIDÉ ou VETO]
-    RAISON: [Ton explication en une phrase]
+    RAISON: [Ton explication concise en une phrase citant le critère déterminant]
     """
 
     # 1. Avis de Gemini (avec retry dédié anti-504)
@@ -93,7 +103,7 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
                     temperature=0.2
                 )
                 text = o_resp.choices[0].message.content.strip()
-                openai_decision = "VALIDÉ" if "VALIDÉ" in text.upper() else "VETO"
+                openai_decision = _parse_ai_decision(text)
                 openai_reason = text
                 openai_api_failed = False
                 break
