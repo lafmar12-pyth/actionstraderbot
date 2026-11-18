@@ -2,7 +2,7 @@
 import os
 import time
 import functools
-import google.generativeai as genai
+from google import genai
 from openai import OpenAI
 from telegram_notifier import send_ai_error_alert
 
@@ -31,15 +31,14 @@ def _parse_ai_decision(text: str) -> str:
     return "VALIDÉ" if "VALIDÉ" in text.upper() else "VETO"
 
 def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
-    """Interroge Gemini avec gestion spécifique des timeouts 504/503."""
-    genai.configure(api_key=gemini_key)
-    g_model = genai.GenerativeModel('gemini-3.8-flash')
+    """Interroge Gemini (via le nouveau SDK google.genai) avec gestion des retries."""
+    client = genai.Client(api_key=gemini_key)
     
     for attempt in range(1, max_retries + 1):
         try:
-            g_resp = g_model.generate_content(
-                prompt,
-                request_options={"timeout": 25}
+            g_resp = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt
             )
             text = g_resp.text.strip()
             decision = _parse_ai_decision(text)
@@ -81,7 +80,7 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
     RAISON: [Ton explication concise en une phrase citant le critère déterminant]
     """
 
-    # 1. Avis de Gemini (avec retry dédié anti-504)
+    # 1. Avis de Gemini (via le nouveau client google.genai)
     gemini_decision, gemini_reason, gemini_api_failed = "VETO", "Clé API GEMINI_API_KEY absente", True
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
