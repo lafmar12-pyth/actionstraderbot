@@ -55,25 +55,25 @@ def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
 
 def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, memory_summary):
     """
-    Interroge Gemini et OpenAI avec audit macro/sectoriel, secours quantitatif et alerte Telegram sur erreur.
+    Interroge Gemini et OpenAI avec audit macro/sectoriel assoupli, secours quantitatif et alerte Telegram sur erreur.
     """
     prompt = f"""
     En tant que comité des risques senior d'un fonds quantitatif actions (US & Canada), analyse cette décision de swing trading :
-    - Actif candidat : {symbol} à {price}$
-    - Signaux techniques & Volume : {score}/100 ({reason})
-    - Tendance générale du marché (S&P 500) : {trend}
-    - Règle de gestion : 2% du portefeuille par tranche (pyramiding progressif autorisé jusqu'à 8% max par action en 4 tranches, plafond global 40%).
-    - Horizon temporel : Swing trading multi-jours (holding minimum 1 jour pour éviter le Pattern Day Trading).
-    - Positions déjà ouvertes en portefeuille : {recent_history}
-    - Consignes de vigilance : {memory_summary}
+- Actif candidat : {symbol} à {price}$
+- Signaux techniques & Volume : {score}/100 ({reason})
+- Tendance générale du marché (S&P 500) : {trend}
+- Règle de gestion : 2% du portefeuille par tranche (pyramiding progressif autorisé jusqu'à 8% max par action en 4 tranches, plafond global 40%).
+- Horizon temporel : Swing trading multi-jours (holding minimum 1 jour pour éviter le Pattern Day Trading).
+- Positions déjà ouvertes en portefeuille : {recent_history}
+- Consignes de vigilance : {memory_summary}
     
     Checklist d'audit obligatoire avant validation :
-    1. CORRÉLATION SECTORIELLE : L'ajout de {symbol} crée-t-il une concentration excessive sur un même secteur par rapport aux positions déjà ouvertes ({recent_history}) ? (Ex: éviter d'accumuler trop de valeurs Tech/Semi-conducteurs ou trop de Banques canadiennes simultanément).
-    2. CALENDRIER ENTREPRISE & MACRO : Y a-t-il une publication de résultats financiers (Earnings) sur {symbol} ou une annonce majeure (Fed, Banque du Canada, CPI) dans les prochaines 48h ?
-    3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ : Si le marché global ({trend}) est baissier ou si le volume relatif est faible (inférieur à 0.8x la moyenne 20j), le signal est-il suffisamment robuste ?
-    4. QUALITÉ DU RENFORCEMENT : S'il s'agit d'un pyramiding, le momentum justifie-t-il réellement d'augmenter la taille de la position ?
+1. CORRÉLATION SECTORIELLE : L'ajout de {symbol} crée-t-il une concentration excessive sur un même secteur par rapport aux positions déjà ouvertes ({recent_history}) ? (Ex: éviter d'accumuler trop de valeurs Tech/Semi-conducteurs ou trop de Banques canadiennes simultanément).
+2. CALENDRIER ENTREPRISE & MACRO : Y a-t-il une publication de résultats financiers (Earnings) sur {symbol} ou une annonce majeure (Fed, Banque du Canada, CPI) dans les prochaines 48h ?
+3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ : Si le marché global ({trend}) est baissier, un achat est autorisé **uniquement si le score technique est très élevé (>= 75/100)** et que le titre montre une force évidente. Si le score est inférieur à 75 dans un marché baissier ou si le volume relatif est anormalement bas (< 0.5x), réponds VETO.
+4. QUALITÉ DU RENFORCEMENT : S'il s'agit d'un pyramiding, le momentum justifie-t-il réellement d'augmenter la taille de la position ?
 
-    Règle de décision : Si l'un des 4 points présente un risque élevé, réponds VETO. Sinon, réponds VALIDÉ.
+    Règle de décision : Si l'un des 4 points présente un risque majeur, réponds VETO. Sinon, réponds VALIDÉ.
     
     Format de réponse strict :
     DECISION: [VALIDÉ ou VETO]
