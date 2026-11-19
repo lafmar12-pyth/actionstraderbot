@@ -2,5 +2,110 @@
     "current_position": "AAPL",
     "entry_price": 351.85,
     "last_buy_dates": {},
-    "last_run": "2026-11-18T20:34:09.967780+00:00"
+    "last_run": "2026-11-19T15:28:39.761282+00:00",
+    "trades": [],
+    "market_journal": {
+        "signals": [
+            {
+                "date": "2026-11-19",
+                "symbol": "AAPL",
+                "price": 348.5,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "MSFT",
+                "price": 517.56,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "TSLA",
+                "price": 381.29,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "AMD",
+                "price": 523.97,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "CNI",
+                "price": 124.04,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "V",
+                "price": 407.73,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "MA",
+                "price": 633.54,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "HD",
+                "price": 337.35,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "PG",
+                "price": 168.16,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "PEP",
+                "price": 138.66,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "KO",
+                "price": 95.69,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-19",
+                "symbol": "WMT",
+                "price": 125.57,
+                "score": 65,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            }
+        ],
+        "stats": {
+            "total_5d": 0,
+            "wins_5d": 0
+        }
+    }
 }
