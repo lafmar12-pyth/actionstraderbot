@@ -26,10 +26,14 @@ class StockSwingEngine:
         self.trading_client = TradingClient(self.api_key, self.secret_key, paper=True)
         self.data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
         
+        # Univers de 30 actions (US & Canada) pour l'observation et le swing trading
         self.symbols = [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD',
-            'SHOP', 'TD', 'RY', 'CNI', 'BNS',
-            'JPM', 'V', 'MA', 'UNH', 'HD', 'PG', 'COST', 'CRM', 'AVGO', 'NFLX', 'DIS', 'PEP'
+            # Tech & Croissance (10)
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
+            # Canada / Finance / Rail / Commerce (6)
+            'SHOP', 'TD', 'RY', 'CNI', 'BNS', 'CRM',
+            # Finance US, Santé, Consommation & Défensives (14)
+            'JPM', 'V', 'MA', 'UNH', 'HD', 'PG', 'COST', 'DIS', 'PEP', 'KO', 'WMT', 'LLY', 'CAT', 'XOM'
         ]
         
         # Gestion du risque & Pyramiding
@@ -44,7 +48,15 @@ class StockSwingEngine:
         self.load_state()
 
     def load_state(self):
-        default_state = {"last_run": None, "trades": [], "last_buy_dates": {}}
+        default_state = {
+            "last_run": None,
+            "trades": [],
+            "last_buy_dates": {},
+            "market_journal": {
+                "signals": [],
+                "stats": {"total_5d": 0, "wins_5d": 0}
+            }
+        }
         if os.path.exists(STATE_FILE):
             try:
                 with open(STATE_FILE, 'r') as f:
@@ -53,6 +65,13 @@ class StockSwingEngine:
                     self.trade_history = loaded
                     self.trade_history.setdefault("trades", [])
                     self.trade_history.setdefault("last_buy_dates", {})
+                    journal = self.trade_history.setdefault(
+                        "market_journal", {"signals": [], "stats": {"total_5d": 0, "wins_5d": 0}}
+                    )
+                    journal.setdefault("signals", [])
+                    journal.setdefault("stats", {"total_5d": 0, "wins_5d": 0})
+                    journal["stats"].setdefault("total_5d", 0)
+                    journal["stats"].setdefault("wins_5d", 0)
                     return
             except Exception:
                 pass
@@ -70,7 +89,7 @@ class StockSwingEngine:
             print(f"⚠️ Impossible de vérifier l'état du marché: {e}")
             return False
 
-    def get_historical_bars(self, symbol: str, calendar_days: int = 90) -> pd.DataFrame:
+    def get_historical_bars(self, symbol: str, calendar_days: int = 120) -> pd.DataFrame:
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=calendar_days)
 
@@ -109,7 +128,7 @@ class StockSwingEngine:
 
     def evaluate_stock_opportunity(self, df):
         if len(df) < 50:
-            return 0, f"Données insuffisantes ({len(df)} bougies)"
+            return 0, "Pas de signal", {"above_sma20": False, "vol_ratio": 1.0}
 
         df['SMA20'] = df['Close'].rolling(window=20).mean()
         df['SMA50'] = df['Close'].rolling(window=50).mean()
@@ -138,12 +157,77 @@ class StockSwingEngine:
             score += 30
             reasons.append(f"RSI optimal ({last_row['RSI']:.1f})")
 
-        # Calcul du ratio de volume pour l'analyse IA
         avg_vol = last_row['VOL20']
-        vol_ratio = (last_row['Volume'] / avg_vol) if pd.notna(avg_vol) and avg_vol > 0 else 1.0
+        vol_ratio = float(last_row['Volume'] / avg_vol) if pd.notna(avg_vol) and avg_vol > 0 else 1.0
         reasons.append(f"Volume: {vol_ratio:.1f}x moy. 20j")
 
-        return score, " | ".join(reasons) if reasons else "Pas de signal"
+        metrics = {
+            "above_sma20": bool(pd.notna(last_row['SMA20']) and last_row['Close'] > last_row['SMA20']),
+            "vol_ratio": vol_ratio
+        }
+
+        return score, " | ".join(reasons) if reasons else "Pas de signal", metrics
+
+    def _record_and_evaluate_observations(self, snapshots: list, today_str: str):
+        """Enregistre les signaux >= 65 sur les 30 actions et évalue ceux d'au moins 7 jours calendaires (~5 séances)."""
+        journal = self.trade_history.setdefault("market_journal", {"signals": [], "stats": {"total_5d": 0, "wins_5d": 0}})
+        signals = journal.setdefault("signals", [])
+        stats = journal.setdefault("stats", {"total_5d": 0, "wins_5d": 0})
+        price_map = {item["symbol"]: item["price"] for item in snapshots}
+        today_date = datetime.strptime(today_str, "%Y-%m-%d").date()
+
+        for obs in signals:
+            if not obs.get("evaluated_5d") and obs["symbol"] in price_map:
+                try:
+                    obs_date = datetime.strptime(obs["date"][:10], "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                if (today_date - obs_date).days >= 7 and obs["price"] > 0:
+                    exit_ref = price_map[obs["symbol"]]
+                    ret_pct = ((exit_ref - obs["price"]) / obs["price"]) * 100
+                    obs["evaluated_5d"] = True
+                    obs["return_5d_pct"] = round(ret_pct, 2)
+                    stats["total_5d"] += 1
+                    if ret_pct > 0:
+                        stats["wins_5d"] += 1
+
+        for item in snapshots:
+            if item["score"] >= 65:
+                already_logged_today = any(
+                    s["symbol"] == item["symbol"] and s["date"][:10] == today_str for s in signals
+                )
+                if not already_logged_today:
+                    signals.append({
+                        "date": today_str,
+                        "symbol": item["symbol"],
+                        "price": round(item["price"], 2),
+                        "score": item["score"],
+                        "regime": item["regime"],
+                        "evaluated_5d": False
+                    })
+
+        journal["signals"] = signals[-100:]
+
+    def _build_market_memory_summary(self, snapshots: list) -> str:
+        """Construit un résumé statistique sobre des 30 actions pour le comité IA."""
+        evaluated_count = sum(1 for s in snapshots if s.get("analyzed"))
+        above_sma20_count = sum(1 for s in snapshots if s.get("above_sma20"))
+        breadth_pct = (above_sma20_count / evaluated_count * 100) if evaluated_count > 0 else 0.0
+
+        stats = self.trade_history.get("market_journal", {}).get("stats", {})
+        total_5d = stats.get("total_5d", 0)
+        wins_5d = stats.get("wins_5d", 0)
+
+        if total_5d >= 10:
+            win_rate = (wins_5d / total_5d) * 100
+            perf_str = f"Taux rebonds positifs ~5j: {win_rate:.1f}% ({wins_5d}/{total_5d})"
+        else:
+            perf_str = f"Historique signaux ~5j en cours ({total_5d}/10 évalués)"
+
+        return (
+            f"Largeur univers ({above_sma20_count}/{evaluated_count} titres > SMA20: {breadth_pct:.1f}%) | "
+            f"{perf_str}. Vérifier corrélation sectorielle, volume relatif et absence d'Earnings sous 48h."
+        )
 
     def _cancel_open_orders_for_symbol(self, symbol: str):
         """Annule les ordres Stop/Trailing liés avant de clôturer ou d'ajuster une position."""
@@ -234,42 +318,45 @@ class StockSwingEngine:
 
         # Météo macroéconomique via SPY
         market_trend = self.get_market_macro_trend()
+        regime_tag = "HAUSSIER" if "HAUSSIER" in market_trend else ("BAISSIER" if "BAISSIER" in market_trend else "NEUTRE")
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         print(f"\n💰 Portefeuille : {total_portfolio:.2f} $ | Tranche (2%) : {tranche_capital:.2f} $")
         print(f"📊 Exposition globale : {current_invested:.2f} $ ({current_exposure_pct:.1f}% / 40.0% max)")
         print(f"🌍 Météo Marché : {market_trend}")
 
-        if (current_invested + tranche_capital) > max_exposure_capital:
-            print("🛑 Plafond global de 40% atteint. Aucun nouvel achat.", flush=True)
-            self.save_state()
-            return
-
         candidates = []
+        snapshots = []
         print(f"\n🔍 Scan des {len(self.symbols)} actions de la watchlist...", flush=True)
+
         for symbol in self.symbols:
-            if symbol in pending_buy_symbols:
-                print(f"   • {symbol:10} | Ordre d'achat déjà en attente chez Alpaca - Ignoré")
-                continue
-
-            existing_pos = positions_map.get(symbol)
-            current_stock_value = float(existing_pos.market_value) if existing_pos else 0.0
-            current_stock_pct = (current_stock_value / total_portfolio) * 100 if total_portfolio > 0 else 0.0
-
-            if (current_stock_value + tranche_capital) > (max_per_stock_capital * 1.05):
-                print(f"   • {symbol:10} | Plafond 8% atteint ({current_stock_pct:.1f}%) - Ignoré")
-                continue
-
             try:
-                df = self.get_historical_bars(symbol, calendar_days=90)
+                df = self.get_historical_bars(symbol, calendar_days=120)
                 if df.empty:
                     continue
 
                 current_price = float(df['Close'].iloc[-1])
-                score, reason = self.evaluate_stock_opportunity(df)
+                score, reason, metrics = self.evaluate_stock_opportunity(df)
+                snapshots.append({
+                    "symbol": symbol,
+                    "price": current_price,
+                    "score": score,
+                    "regime": regime_tag,
+                    "analyzed": len(df) >= 50,
+                    "above_sma20": metrics["above_sma20"]
+                })
+
+                if symbol in pending_buy_symbols:
+                    print(f"   • {symbol:10} | Ordre d'achat déjà en attente chez Alpaca - Ignoré")
+                    continue
+
+                existing_pos = positions_map.get(symbol)
+                current_stock_value = float(existing_pos.market_value) if existing_pos else 0.0
+                current_stock_pct = (current_stock_value / total_portfolio) * 100 if total_portfolio > 0 else 0.0
 
                 if not existing_pos:
                     print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | Score: {score:3}/100 | {reason}")
-                    if score >= 65:
+                    if score >= 65 and (current_stock_value + tranche_capital) <= (max_per_stock_capital * 1.05):
                         candidates.append({
                             'symbol': symbol, 'price': current_price, 'score': score,
                             'reason': f"[Entrée 1/4 - 2%] {reason}", 'is_pyramid': False, 'tranche_num': 1
@@ -279,14 +366,24 @@ class StockSwingEngine:
                     next_tranche = min(4, round(current_stock_pct / 2.0) + 1)
                     print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | Score: {score:3}/100 | En cours ({current_stock_pct:.1f}%, P&L: {unrealized_plpc*100:+.1f}%)")
 
-                    if score >= 80 and unrealized_plpc >= self.min_gain_to_pyramid:
-                        candidates.append({
-                            'symbol': symbol, 'price': current_price, 'score': score + 5,
-                            'reason': f"[Renforcement {next_tranche}/4 -> {next_tranche*2}%] P&L {unrealized_plpc*100:+.1f}% | {reason}",
-                            'is_pyramid': True, 'tranche_num': next_tranche
-                        })
+                    if (current_stock_value + tranche_capital) <= (max_per_stock_capital * 1.05):
+                        if score >= 80 and unrealized_plpc >= self.min_gain_to_pyramid:
+                            candidates.append({
+                                'symbol': symbol, 'price': current_price, 'score': score + 5,
+                                'reason': f"[Renforcement {next_tranche}/4 -> {next_tranche*2}%] P&L {unrealized_plpc*100:+.1f}% | {reason}",
+                                'is_pyramid': True, 'tranche_num': next_tranche
+                            })
             except Exception as e:
                 print(f"   ⚠️ Erreur d'analyse sur {symbol}: {e}")
+
+        # Mise à jour de l'observatoire des 30 actions même sans achat ni vente
+        self._record_and_evaluate_observations(snapshots, today_str)
+        enriched_memory = self._build_market_memory_summary(snapshots)
+
+        if (current_invested + tranche_capital) > max_exposure_capital:
+            print("🛑 Plafond global de 40% atteint. Aucun nouvel achat.", flush=True)
+            self.save_state()
+            return
 
         if candidates:
             candidates.sort(key=lambda x: x['score'], reverse=True)
@@ -299,7 +396,7 @@ class StockSwingEngine:
             decision, feedback = ask_dual_ai_decision(
                 clean_symbol, best_choice['price'], min(100, best_choice['score']),
                 best_choice['reason'], market_trend, list(positions_map.keys()),
-                "Vérifier corrélation sectorielle, volume relatif et absence d'Earnings sous 48h."
+                enriched_memory
             )
 
             if decision == "VALIDÉ":
@@ -325,7 +422,6 @@ class StockSwingEngine:
                     except Exception as e:
                         print(f"   ℹ️ Trailing Stop serveur non placé (géré par le bot) : {e}")
                 
-                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 self.trade_history["last_buy_dates"][clean_symbol] = today_str
                 self.trade_history["trades"].append({
                     "date": datetime.now(timezone.utc).isoformat(), "type": action_label,
