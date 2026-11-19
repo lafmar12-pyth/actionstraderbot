@@ -37,7 +37,7 @@ class StockSwingEngine:
         ]
         
         # Gestion du risque & Pyramiding
-        self.tranche_pct = 0.02          # 2% par tranche
+        self.tranche_pct = 0.02          # 2% nominal par tranche
         self.max_per_stock_pct = 0.08    # 8% max par action (4 tranches)
         self.max_capital_usage = 0.40    # 40% max global
         
@@ -168,6 +168,66 @@ class StockSwingEngine:
 
         return score, " | ".join(reasons) if reasons else "Pas de signal", metrics
 
+    def compute_volatility_adjusted_tranche(self, df: pd.DataFrame, total_portfolio: float):
+        """Module la tranche nominale de 2% selon l'amplitude journalière moyenne sur 14 jours (ADR%)."""
+        base_pct = self.tranche_pct
+        if df is None or len(df) < 14:
+            return total_portfolio * base_pct, base_pct * 100, 0.0
+
+        recent = df.tail(14)
+        valid = recent[recent['Close'] > 0]
+        if valid.empty:
+            return total_portfolio * base_pct, base_pct * 100, 0.0
+
+        adr_pct = float(((valid['High'] - valid['Low']) / valid['Close']).mean())
+        if adr_pct > 0.035:
+            multiplier = 0.75   # 1.5% sur titres très volatils
+        elif adr_pct < 0.015:
+            multiplier = 1.25   # 2.5% sur titres calmes
+        else:
+            multiplier = 1.00   # 2.0% nominal
+
+        adj_pct = base_pct * multiplier
+        return total_portfolio * adj_pct, adj_pct * 100, adr_pct * 100
+
+    def _record_closed_trade(self, symbol: str, reason_tag: str, plpc: float, pl_dollars: float):
+        """Enregistre la clôture d'une position pour calculer l'espérance mathématique réelle."""
+        self.trade_history.setdefault("trades", []).append({
+            "date": datetime.now(timezone.utc).isoformat(),
+            "type": "CLÔTURE",
+            "reason": reason_tag,
+            "symbol": symbol,
+            "realized_plpc": round(plpc * 100, 2),
+            "realized_pl": round(pl_dollars, 2)
+        })
+
+    def compute_expectancy_stats(self) -> dict:
+        """Calcule le win rate, le gain/perte moyen et l'espérance (%) sur les clôtures enregistrées."""
+        closed = [
+            t for t in self.trade_history.get("trades", [])
+            if t.get("type") == "CLÔTURE" and isinstance(t.get("realized_plpc"), (int, float))
+        ]
+        n = len(closed)
+        if n == 0:
+            return {"count": 0, "win_rate": 0.0, "avg_win": 0.0, "avg_loss": 0.0, "expectancy": 0.0}
+
+        wins = [t["realized_plpc"] for t in closed if t["realized_plpc"] > 0]
+        losses = [abs(t["realized_plpc"]) for t in closed if t["realized_plpc"] <= 0]
+
+        p_win = len(wins) / n
+        p_loss = len(losses) / n
+        avg_win = sum(wins) / len(wins) if wins else 0.0
+        avg_loss = sum(losses) / len(losses) if losses else 0.0
+        expectancy = (p_win * avg_win) - (p_loss * avg_loss)
+
+        return {
+            "count": n,
+            "win_rate": round(p_win * 100, 1),
+            "avg_win": round(avg_win, 2),
+            "avg_loss": round(avg_loss, 2),
+            "expectancy": round(expectancy, 2)
+        }
+
     def _record_and_evaluate_observations(self, snapshots: list, today_str: str):
         """Enregistre les signaux >= 65 sur les 30 actions et évalue ceux d'au moins 7 jours calendaires (~5 séances)."""
         journal = self.trade_history.setdefault("market_journal", {"signals": [], "stats": {"total_5d": 0, "wins_5d": 0}})
@@ -224,9 +284,16 @@ class StockSwingEngine:
         else:
             perf_str = f"Historique signaux ~5j en cours ({total_5d}/10 évalués)"
 
+        exp_stats = self.compute_expectancy_stats()
+        exp_str = (
+            f"Espérance trades clôturés ({exp_stats['count']}): {exp_stats['expectancy']:+.2f}% "
+            f"(Win {exp_stats['win_rate']:.1f}%, Gain moy. +{exp_stats['avg_win']:.2f}%, Perte moy. -{exp_stats['avg_loss']:.2f}%)"
+            if exp_stats["count"] > 0 else "Espérance trades clôturés: aucun trade fermé"
+        )
+
         return (
             f"Largeur univers ({above_sma20_count}/{evaluated_count} titres > SMA20: {breadth_pct:.1f}%) | "
-            f"{perf_str}. Vérifier corrélation sectorielle, volume relatif et absence d'Earnings sous 48h."
+            f"{perf_str} | {exp_str}. Vérifier corrélation sectorielle, volume relatif et absence d'Earnings sous 48h."
         )
 
     def _cancel_open_orders_for_symbol(self, symbol: str):
@@ -276,6 +343,7 @@ class StockSwingEngine:
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
                 self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
+                self._record_closed_trade(symbol, "TAKE-PROFIT", unrealized_plpc, unrealized_pl)
                 send_telegram_alert(f"🎯 *TAKE-PROFIT* sur `{symbol}` : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`)")
                 closed_count += 1
 
@@ -285,6 +353,7 @@ class StockSwingEngine:
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
                 self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
+                self._record_closed_trade(symbol, sl_type, unrealized_plpc, unrealized_pl)
                 send_telegram_alert(f"🛑 *{sl_type}* sur `{symbol}` (Palier {tranches_est}/4) : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`)")
                 closed_count += 1
 
@@ -299,7 +368,7 @@ class StockSwingEngine:
 
         account = self.trading_client.get_account()
         total_portfolio = float(account.equity)
-        tranche_capital = total_portfolio * self.tranche_pct
+        nominal_tranche = total_portfolio * self.tranche_pct
         max_per_stock_capital = total_portfolio * self.max_per_stock_pct
         max_exposure_capital = total_portfolio * self.max_capital_usage
 
@@ -321,9 +390,15 @@ class StockSwingEngine:
         regime_tag = "HAUSSIER" if "HAUSSIER" in market_trend else ("BAISSIER" if "BAISSIER" in market_trend else "NEUTRE")
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        print(f"\n💰 Portefeuille : {total_portfolio:.2f} $ | Tranche (2%) : {tranche_capital:.2f} $")
+        exp_stats = self.compute_expectancy_stats()
+        print(f"\n💰 Portefeuille : {total_portfolio:.2f} $ | Tranche nominale (2%) : {nominal_tranche:.2f} $")
         print(f"📊 Exposition globale : {current_invested:.2f} $ ({current_exposure_pct:.1f}% / 40.0% max)")
         print(f"🌍 Météo Marché : {market_trend}")
+        if exp_stats["count"] > 0:
+            print(
+                f"📈 Espérance réelle ({exp_stats['count']} clôtures) : {exp_stats['expectancy']:+.2f}% "
+                f"| Win rate : {exp_stats['win_rate']:.1f}% | Gain moy. : +{exp_stats['avg_win']:.2f}% | Perte moy. : -{exp_stats['avg_loss']:.2f}%"
+            )
 
         candidates = []
         snapshots = []
@@ -337,6 +412,8 @@ class StockSwingEngine:
 
                 current_price = float(df['Close'].iloc[-1])
                 score, reason, metrics = self.evaluate_stock_opportunity(df)
+                tranche_capital, adj_pct, adr_pct = self.compute_volatility_adjusted_tranche(df, total_portfolio)
+
                 snapshots.append({
                     "symbol": symbol,
                     "price": current_price,
@@ -355,22 +432,24 @@ class StockSwingEngine:
                 current_stock_pct = (current_stock_value / total_portfolio) * 100 if total_portfolio > 0 else 0.0
 
                 if not existing_pos:
-                    print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | Score: {score:3}/100 | {reason}")
+                    print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | ADR14: {adr_pct:4.1f}% ({adj_pct:4.1f}%) | Score: {score:3}/100 | {reason}")
                     if score >= 65 and (current_stock_value + tranche_capital) <= (max_per_stock_capital * 1.05):
                         candidates.append({
                             'symbol': symbol, 'price': current_price, 'score': score,
-                            'reason': f"[Entrée 1/4 - 2%] {reason}", 'is_pyramid': False, 'tranche_num': 1
+                            'tranche_capital': tranche_capital, 'adj_pct': adj_pct,
+                            'reason': f"[Entrée 1/4 - {adj_pct:.1f}%] {reason}", 'is_pyramid': False, 'tranche_num': 1
                         })
                 else:
                     unrealized_plpc = float(existing_pos.unrealized_plpc)
                     next_tranche = min(4, round(current_stock_pct / 2.0) + 1)
-                    print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | Score: {score:3}/100 | En cours ({current_stock_pct:.1f}%, P&L: {unrealized_plpc*100:+.1f}%)")
+                    print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | ADR14: {adr_pct:4.1f}% | Score: {score:3}/100 | En cours ({current_stock_pct:.1f}%, P&L: {unrealized_plpc*100:+.1f}%)")
 
                     if (current_stock_value + tranche_capital) <= (max_per_stock_capital * 1.05):
                         if score >= 80 and unrealized_plpc >= self.min_gain_to_pyramid:
                             candidates.append({
                                 'symbol': symbol, 'price': current_price, 'score': score + 5,
-                                'reason': f"[Renforcement {next_tranche}/4 -> {next_tranche*2}%] P&L {unrealized_plpc*100:+.1f}% | {reason}",
+                                'tranche_capital': tranche_capital, 'adj_pct': adj_pct,
+                                'reason': f"[Renforcement {next_tranche}/4 -> +{adj_pct:.1f}%] P&L {unrealized_plpc*100:+.1f}% | {reason}",
                                 'is_pyramid': True, 'tranche_num': next_tranche
                             })
             except Exception as e:
@@ -380,14 +459,16 @@ class StockSwingEngine:
         self._record_and_evaluate_observations(snapshots, today_str)
         enriched_memory = self._build_market_memory_summary(snapshots)
 
-        if (current_invested + tranche_capital) > max_exposure_capital:
-            print("🛑 Plafond global de 40% atteint. Aucun nouvel achat.", flush=True)
-            self.save_state()
-            return
-
         if candidates:
             candidates.sort(key=lambda x: x['score'], reverse=True)
             best_choice = candidates[0]
+            chosen_tranche = best_choice['tranche_capital']
+
+            if (current_invested + chosen_tranche) > max_exposure_capital:
+                print(f"🛑 Plafond global de 40% atteint ({current_exposure_pct:.1f}%). Aucun nouvel achat.", flush=True)
+                self.save_state()
+                return
+
             clean_symbol = best_choice['symbol']
             action_label = f"RENFORCEMENT ({best_choice['tranche_num']}/4)" if best_choice['is_pyramid'] else "NOUVELLE ENTRÉE (1/4)"
 
@@ -400,10 +481,11 @@ class StockSwingEngine:
             )
 
             if decision == "VALIDÉ":
-                qty_to_buy = round(tranche_capital / best_choice['price'], 2)
-                print(f"🔥 Exécution {action_label} Alpaca : +{qty_to_buy} actions de {clean_symbol}")
+                qty_to_buy = round(chosen_tranche / best_choice['price'], 2)
+                print(f"🔥 Exécution {action_label} Alpaca : +{qty_to_buy} actions de {clean_symbol} ({chosen_tranche:.2f}$ / {best_choice['adj_pct']:.1f}%)")
                 
-                # 1. Ordre d'achat au marché
+                # 1. Ordre d'achat au marché après nettoyage d'éventuels ordres résiduels
+                self._cancel_open_orders_for_symbol(clean_symbol)
                 market_order_data = MarketOrderRequest(
                     symbol=clean_symbol, qty=qty_to_buy, side=OrderSide.BUY, time_in_force=TimeInForce.DAY
                 )
@@ -424,15 +506,19 @@ class StockSwingEngine:
                 
                 self.trade_history["last_buy_dates"][clean_symbol] = today_str
                 self.trade_history["trades"].append({
-                    "date": datetime.now(timezone.utc).isoformat(), "type": action_label,
-                    "symbol": clean_symbol, "qty": qty_to_buy, "price": best_choice['price'],
-                    "allocated": round(tranche_capital, 2)
+                    "date": datetime.now(timezone.utc).isoformat(),
+                    "type": action_label,
+                    "symbol": clean_symbol,
+                    "qty": qty_to_buy,
+                    "price": best_choice['price'],
+                    "allocated": round(chosen_tranche, 2),
+                    "tranche_pct_used": round(best_choice['adj_pct'], 2)
                 })
                 
                 send_telegram_alert(
-                    f"📈 *{action_label}* : `+{qty_to_buy}` actions de `{clean_symbol}` à `{best_choice['price']:.2f}$`\n"
-                    f"• Exposition sur `{clean_symbol}` : `{best_choice['tranche_num']*2}% / 8% max`\n"
-                    f"• Exposition globale : `{(current_invested + tranche_capital)/total_portfolio*100:.1f}% / 40%`"
+                    f"📈 *{action_label}* : `+{qty_to_buy}` actions de `{clean_symbol}` à `{best_choice['price']:.2f}$` (`{best_choice['adj_pct']:.1f}%`)\n"
+                    f"• Palier cible : `{best_choice['tranche_num']}/4` (`8%` max/titre)\n"
+                    f"• Exposition globale : `{(current_invested + chosen_tranche)/total_portfolio*100:.1f}% / 40%`"
                 )
             else:
                 print(f"🛡️ [VETO IA] Ordre annulé : {feedback}")
