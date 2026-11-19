@@ -44,16 +44,19 @@ class StockSwingEngine:
         self.load_state()
 
     def load_state(self):
+        default_state = {"last_run": None, "trades": [], "last_buy_dates": {}}
         if os.path.exists(STATE_FILE):
             try:
                 with open(STATE_FILE, 'r') as f:
-                    self.trade_history = json.load(f)
-                    if "last_buy_dates" not in self.trade_history:
-                        self.trade_history["last_buy_dates"] = {}
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    self.trade_history = loaded
+                    self.trade_history.setdefault("trades", [])
+                    self.trade_history.setdefault("last_buy_dates", {})
                     return
             except Exception:
                 pass
-        self.trade_history = {"last_run": None, "trades": [], "last_buy_dates": {}}
+        self.trade_history = default_state
 
     def save_state(self):
         self.trade_history["last_run"] = datetime.now(timezone.utc).isoformat()
