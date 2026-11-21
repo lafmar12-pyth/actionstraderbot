@@ -1,48 +1,54 @@
+# market_memory.py
 import os
 import json
+from datetime import datetime, timezone
 
-STATE_FILE = "stock_bot_state.json"
 MEMORY_FILE = "stock_market_memory.json"
 
+
 class MarketMemoryManager:
-    def __init__(self):
-        self.load_state()
+    def __init__(self, memory_file: str = MEMORY_FILE, max_lessons: int = 80):
+        self.memory_file = memory_file
+        self.max_lessons = max_lessons
+        self.lessons = []
         self.load_memory()
 
-    def load_state(self):
-        if os.path.exists(STATE_FILE):
-            try:
-                with open(STATE_FILE, 'r') as f:
-                    data = json.load(f)
-                    self.current_position = data.get('current_position', None)
-                    self.entry_price = data.get('entry_price', None)
-                    return
-            except Exception:
-                pass
-        self.current_position = None
-        self.entry_price = None
-
-    def save_state(self):
-        data = {
-            'current_position': self.current_position,
-            'entry_price': self.entry_price
-        }
-        with open(STATE_FILE, 'w') as f:
-            json.dump(data, f, indent=4)
-
     def load_memory(self):
-        if os.path.exists(MEMORY_FILE):
+        if os.path.exists(self.memory_file):
             try:
-                with open(MEMORY_FILE, 'r') as f:
-                    self.lessons = json.load(f).get('lessons', [])
+                with open(self.memory_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and isinstance(data.get("lessons"), list):
+                    self.lessons = data["lessons"][-self.max_lessons :]
                     return
             except Exception:
                 pass
         self.lessons = []
 
-    def add_lesson(self, lesson_text):
-        self.lessons.append(lesson_text)
-        if len(self.lessons) > 50:
-            self.lessons = self.lessons[-50:]
-        with open(MEMORY_FILE, 'w') as f:
-            json.dump({'lessons': self.lessons}, f, indent=4)
+    def save_memory(self):
+        with open(self.memory_file, "w", encoding="utf-8") as f:
+            json.dump({"lessons": self.lessons[-self.max_lessons :]}, f, indent=4, ensure_ascii=False)
+
+    def add_lesson(self, lesson_text: str, symbol: str | None = None, pnl_pct: float | None = None):
+        entry = {
+            "date": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "pnl_pct": round(float(pnl_pct), 2) if isinstance(pnl_pct, (int, float)) else None,
+            "lesson": str(lesson_text),
+        }
+        self.lessons.append(entry)
+        self.lessons = self.lessons[-self.max_lessons :]
+        self.save_memory()
+
+    def get_recent_lessons_summary(self, limit: int = 5) -> str:
+        if not self.lessons:
+            return "Aucune leçon mémoire enregistrée."
+        recent = self.lessons[-limit:]
+        parts = []
+        for item in recent:
+            if isinstance(item, dict):
+                sym = f"[{item['symbol']}] " if item.get("symbol") else ""
+                parts.append(f"{sym}{item.get('lesson', '')}")
+            else:
+                parts.append(str(item))
+        return " | ".join(p for p in parts if p)
