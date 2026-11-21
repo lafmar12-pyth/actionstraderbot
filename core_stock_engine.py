@@ -11,6 +11,8 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 from dual_advisor import ask_dual_ai_decision
+from market_memory import MarketMemoryManager
+from stock_learning_library import StockLearningLibrary
 from telegram_notifier import send_telegram_alert
 
 STATE_FILE = "stock_bot_state.json"
@@ -19,6 +21,22 @@ COOLDOWN_DAYS_AFTER_LOSS = 3
 MAX_LOSSES_IN_5_DAYS = 2
 MIN_NEW_ENTRY_SCORE = 72
 MIN_PYRAMID_SCORE = 82
+MAX_POSITIONS_PER_SECTOR = 2
+
+SECTOR_MAP = {
+    # Tech & Croissance
+    "AAPL": "TECH", "MSFT": "TECH", "GOOGL": "TECH", "AMZN": "TECH",
+    "NVDA": "TECH", "META": "TECH", "TSLA": "TECH", "AMD": "TECH",
+    "AVGO": "TECH", "NFLX": "TECH", "SHOP": "TECH", "CRM": "TECH",
+    # Banques & Finance
+    "TD": "FINANCE_CA", "RY": "FINANCE_CA", "BNS": "FINANCE_CA",
+    "JPM": "FINANCE_US", "V": "FINANCE_US", "MA": "FINANCE_US",
+    # Défensives, Santé, Consommation & Cycliques
+    "UNH": "SANTE", "LLY": "SANTE",
+    "PG": "CONSO_DEF", "KO": "CONSO_DEF", "PEP": "CONSO_DEF", "WMT": "CONSO_DEF", "COST": "CONSO_DEF",
+    "HD": "CONSO_DISC", "DIS": "CONSO_DISC",
+    "CNI": "INDUST_TRANS", "CAT": "INDUST_TRANS", "XOM": "ENERGIE",
+}
 
 
 class StockSwingEngine:
@@ -31,6 +49,8 @@ class StockSwingEngine:
 
         self.trading_client = TradingClient(self.api_key, self.secret_key, paper=True)
         self.data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+        self.memory = MarketMemoryManager()
+        self.library = StockLearningLibrary()
 
         # Univers de 30 actions (US & Canada) pour l'observation et le swing trading
         self.symbols = [
@@ -131,8 +151,27 @@ class StockSwingEngine:
             print(f"⚠️ Impossible de récupérer la tendance SPY : {e}", flush=True)
         return "NEUTRE_BOURSE"
 
+    def _candle_quality_penalty(self, df: pd.DataFrame) -> tuple[int, str]:
+        """Pénalise une forte mèche haute de rejet vendeur sur la dernière séance."""
+        if df is None or len(df) < 1:
+            return 0, ""
+        last = df.iloc[-1]
+        high = float(last["High"])
+        low = float(last["Low"])
+        close_p = float(last["Close"])
+        open_p = float(last["Open"])
+        total_range = high - low
+        if total_range <= 0:
+            return 0, ""
+
+        upper_wick = high - max(open_p, close_p)
+        upper_wick_ratio = upper_wick / total_range
+        if upper_wick_ratio > 0.45 and close_p < open_p:
+            return -10, f"Rejet en séance (mèche haute {upper_wick_ratio*100:.0f}%)"
+        return 0, ""
+
     def evaluate_stock_opportunity(self, df):
-        """Évalue la structure de tendance, le rebond/momentum et le volume relatif sur données journalières."""
+        """Évalue la structure de tendance, le rebond/momentum, le volume relatif et la qualité de bougie."""
         if len(df) < 55:
             return 0, "Données insuffisantes (<55 séances)", {"above_sma20": False, "vol_ratio": 1.0}
 
@@ -195,6 +234,11 @@ class StockSwingEngine:
             score = max(0, score - 25)
             reasons.append("Repli journalier marqué")
 
+        wick_penalty, wick_reason = self._candle_quality_penalty(df)
+        if wick_penalty != 0:
+            score = max(0, score + wick_penalty)
+            reasons.append(wick_reason)
+
         metrics = {
             "above_sma20": bool(close_now > sma20),
             "vol_ratio": vol_ratio,
@@ -236,7 +280,7 @@ class StockSwingEngine:
             return None
 
     def _record_closed_trade(self, symbol: str, reason_tag: str, plpc: float, pl_dollars: float):
-        """Enregistre la clôture d'une position pour calculer l'espérance mathématique réelle."""
+        """Enregistre la clôture dans l'état, la mémoire récente et la bibliothèque consolidée."""
         self.trade_history.setdefault("trades", []).append({
             "date": datetime.now(timezone.utc).isoformat(),
             "type": "CLÔTURE",
@@ -245,6 +289,13 @@ class StockSwingEngine:
             "realized_plpc": round(plpc * 100, 2),
             "realized_pl": round(pl_dollars, 2),
         })
+        self.library.record_closed_trade(symbol, plpc, pl_dollars, reason_tag=reason_tag)
+        tag = "gagnante" if plpc > 0 else "perdante"
+        self.memory.add_lesson(
+            f"Clôture {tag} ({reason_tag}) à {plpc*100:+.2f}% ({pl_dollars:+.2f}$).",
+            symbol=symbol,
+            pnl_pct=plpc * 100.0,
+        )
 
     def compute_expectancy_stats(self) -> dict:
         """Calcule le win rate, le gain/perte moyen et l'espérance (%) sur les clôtures enregistrées."""
@@ -273,11 +324,29 @@ class StockSwingEngine:
             "expectancy": round(expectancy, 2),
         }
 
-    def can_open_stock_trade(self, candidate: dict, now_utc: datetime, exp_stats: dict) -> tuple[bool, str]:
+    def check_sector_concentration(self, symbol: str, positions_map: dict, is_pyramid: bool) -> tuple[bool, str]:
+        """Limite l'exposition simultanée à un même secteur pour éviter les paris corrélés."""
+        sector = SECTOR_MAP.get(symbol, "AUTRE")
+        same_sector_count = 0
+        for held_sym in positions_map.keys():
+            if held_sym == symbol and is_pyramid:
+                continue
+            if SECTOR_MAP.get(held_sym, "AUTRE") == sector:
+                same_sector_count += 1
+
+        if same_sector_count >= MAX_POSITIONS_PER_SECTOR:
+            return False, f"Concentration sectorielle sur {sector} ({same_sector_count}/{MAX_POSITIONS_PER_SECTOR} titres déjà ouverts)."
+        return True, "Secteur sain"
+
+    def can_open_stock_trade(self, candidate: dict, now_utc: datetime, exp_stats: dict, positions_map: dict) -> tuple[bool, str]:
         """Garde-fous Trader Pro adaptés au swing trading actions."""
         symbol = candidate["symbol"]
         is_pyramid = bool(candidate.get("is_pyramid"))
         score = int(candidate["score"])
+
+        sector_ok, sector_msg = self.check_sector_concentration(symbol, positions_map, is_pyramid)
+        if not sector_ok:
+            return False, sector_msg
 
         closed_trades = [
             t for t in self.trade_history.get("trades", [])
@@ -314,7 +383,7 @@ class StockSwingEngine:
         return True, "Validé"
 
     def _record_and_evaluate_observations(self, snapshots: list, today_str: str):
-        """Enregistre les signaux >= 65 sur les 30 actions et évalue ceux d'au moins 7 jours calendaires (~5 séances)."""
+        """Enregistre les signaux >= seuil sur les 30 actions et évalue ceux d'au moins 7 jours calendaires (~5 séances)."""
         journal = self.trade_history.setdefault("market_journal", {"signals": [], "stats": {"total_5d": 0, "wins_5d": 0}})
         signals = journal.setdefault("signals", [])
         stats = journal.setdefault("stats", {"total_5d": 0, "wins_5d": 0})
@@ -352,9 +421,10 @@ class StockSwingEngine:
                     })
 
         journal["signals"] = signals[-100:]
+        self.library.sync_from_journal(signals)
 
-    def _build_market_memory_summary(self, snapshots: list) -> str:
-        """Construit un résumé statistique sobre des 30 actions pour le comité IA."""
+    def _build_market_memory_summary(self, snapshots: list, target_symbol: str | None = None, regime_tag: str = "NEUTRE") -> str:
+        """Construit un résumé statistique sobre des 30 actions, de la mémoire et de la bibliothèque pour le comité IA."""
         evaluated_count = sum(1 for s in snapshots if s.get("analyzed"))
         above_sma20_count = sum(1 for s in snapshots if s.get("above_sma20"))
         breadth_pct = (above_sma20_count / evaluated_count * 100.0) if evaluated_count > 0 else 0.0
@@ -376,9 +446,15 @@ class StockSwingEngine:
             if exp_stats["count"] > 0 else "Espérance trades clôturés: aucun trade fermé"
         )
 
+        lib_txt = self.library.get_summary_for_committee(target_symbol, regime_tag) if target_symbol else ""
+        mem_txt = self.memory.get_recent_lessons_summary(limit=3)
+
+        extra = " | ".join(p for p in (lib_txt, mem_txt) if p)
         return (
             f"Largeur univers ({above_sma20_count}/{evaluated_count} titres > SMA20: {breadth_pct:.1f}%) | "
-            f"{perf_str} | {exp_str}. Vérifier corrélation sectorielle, volume relatif et absence d'Earnings sous 48h."
+            f"{perf_str} | {exp_str}"
+            f"{' | ' + extra if extra else ''}. "
+            f"Vérifier corrélation sectorielle, volume relatif et absence d'Earnings sous 48h."
         )
 
     def _cancel_open_orders_for_symbol(self, symbol: str):
@@ -555,22 +631,34 @@ class StockSwingEngine:
                 print(f"   ⚠️ Erreur d'analyse sur {symbol}: {e}", flush=True)
 
         self._record_and_evaluate_observations(snapshots, today_str)
-        enriched_memory = self._build_market_memory_summary(snapshots)
 
         if candidates:
             candidates.sort(key=lambda x: x["score"], reverse=True)
 
             best_choice = None
             for cand in candidates:
-                allowed, block_reason = self.can_open_stock_trade(cand, now_utc, exp_stats)
+                allowed, block_reason = self.can_open_stock_trade(cand, now_utc, exp_stats, positions_map)
                 if not allowed:
                     print(f"🛡️ [Filtre Pro Actions] {cand['symbol']} ignoré : {block_reason}", flush=True)
                     continue
+
+                lib_eval = self.library.evaluate_candidate(
+                    symbol=cand["symbol"],
+                    base_score=cand["score"],
+                    regime=regime_tag,
+                    is_pyramid=bool(cand.get("is_pyramid")),
+                )
+                if lib_eval["veto"]:
+                    print(f"📚 [Bibliothèque] {cand['symbol']} refusé : {lib_eval['summary']}", flush=True)
+                    continue
+
+                cand["score"] = lib_eval["adjusted_score"]
+                cand["reason"] = f"{cand['reason']} | Biblio ({lib_eval['delta']:+d}): {lib_eval['summary']}"
                 best_choice = cand
                 break
 
             if not best_choice:
-                print("😴 Aucun candidat ne passe les garde-fous pro actions (mode flat / maintien).", flush=True)
+                print("😴 Aucun candidat ne passe les garde-fous pro actions et la bibliothèque (mode flat / maintien).", flush=True)
                 self.save_state()
                 return
 
@@ -582,6 +670,7 @@ class StockSwingEngine:
 
             clean_symbol = best_choice["symbol"]
             action_label = f"RENFORCEMENT ({best_choice['tranche_num']}/4)" if best_choice["is_pyramid"] else "NOUVELLE ENTRÉE (1/4)"
+            enriched_memory = self._build_market_memory_summary(snapshots, target_symbol=clean_symbol, regime_tag=regime_tag)
 
             print(f"\n🧠 Soumission du dossier Swing {clean_symbol} [{action_label}] au comité multi-IA...", flush=True)
 
