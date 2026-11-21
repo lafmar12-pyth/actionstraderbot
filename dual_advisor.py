@@ -6,6 +6,7 @@ import google.generativeai as genai
 from openai import OpenAI
 from telegram_notifier import send_ai_error_alert
 
+
 def safe_api_call(max_retries=3, delay=3):
     """Décorateur pour retenter automatiquement un appel en cas d'erreur réseau."""
     def decorator(func):
@@ -22,26 +23,34 @@ def safe_api_call(max_retries=3, delay=3):
         return wrapper
     return decorator
 
+
 def _parse_ai_decision(text: str) -> str:
-    """Extrait proprement VALIDÉ ou VETO depuis la ligne DECISION de l'IA."""
+    """Extrait proprement VALIDÉ ou VETO depuis la réponse de l'IA."""
     for line in text.splitlines():
         clean_line = line.strip().upper()
         if clean_line.startswith("DECISION"):
-            return "VALIDÉ" if "VALIDÉ" in clean_line else "VETO"
-    return "VALIDÉ" if "VALIDÉ" in text.upper() else "VETO"
+            if "VETO" in clean_line:
+                return "VETO"
+            if "VALIDÉ" in clean_line or "VALIDE" in clean_line:
+                return "VALIDÉ"
+    upper = text.upper()
+    if "VETO" in upper and "VALIDÉ" not in upper:
+        return "VETO"
+    return "VALIDÉ" if "VALIDÉ" in upper else "VETO"
+
 
 def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
     """Interroge Gemini avec gestion spécifique des timeouts 504/503."""
     genai.configure(api_key=gemini_key)
-    g_model = genai.GenerativeModel('gemini-3.8-flash')
-    
+    g_model = genai.GenerativeModel("gemini-3.8-flash")
+
     for attempt in range(1, max_retries + 1):
         try:
             g_resp = g_model.generate_content(
                 prompt,
-                request_options={"timeout": 25}
+                request_options={"timeout": 25},
             )
-            text = g_resp.text.strip()
+            text = (g_resp.text or "").strip()
             decision = _parse_ai_decision(text)
             return decision, text, False
         except Exception as e:
@@ -54,9 +63,11 @@ def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
                 continue
             return "VETO", f"Erreur Gemini: {err_str}", True
 
+
 def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, memory_summary):
     """
-    Interroge Gemini et OpenAI avec audit macro/sectoriel assoupli, secours quantitatif et alerte Telegram sur erreur.
+    Interroge Gemini et OpenAI avec audit sectoriel/macro actions (US & Canada)
+    et repli quantitatif local si les clés/API échouent.
     """
     prompt = f"""
     En tant que comité des risques senior d'un fonds quantitatif actions (US & Canada), analyse cette décision de swing trading :
@@ -67,30 +78,27 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
 - Horizon temporel : Swing trading multi-jours (holding minimum 1 jour pour éviter le Pattern Day Trading).
 - Positions déjà ouvertes en portefeuille : {recent_history}
 - Consignes de vigilance : {memory_summary}
-    
+
     Checklist d'audit obligatoire avant validation :
-1. CORRÉLATION SECTORIELLE : L'ajout de {symbol} crée-t-il une concentration excessive sur un même secteur par rapport aux positions déjà ouvertes ({recent_history}) ? (Ex: éviter d'accumuler trop de valeurs Tech/Semi-conducteurs ou trop de Banques canadiennes simultanément).
+1. CORRÉLATION SECTORIELLE : L'ajout de {symbol} crée-t-il une concentration excessive sur un même secteur par rapport aux positions déjà ouvertes ({recent_history}) ?
 2. CALENDRIER ENTREPRISE & MACRO : Y a-t-il une publication de résultats financiers (Earnings) sur {symbol} ou une annonce majeure (Fed, Banque du Canada, CPI) dans les prochaines 48h ?
-3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ : Si le marché global ({trend}) est baissier, un achat est autorisé **uniquement si le score technique est très élevé (>= 75/100)** et que le titre montre une force évidente. Si le score est inférieur à 75 dans un marché baissier ou si le volume relatif est anormalement bas (< 0.5x), réponds VETO.
+3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ : Si le marché global ({trend}) est baissier, un achat est autorisé **uniquement si le score technique est très élevé (>= 78/100)** et que le titre montre une force évidente. Si le volume relatif est faible (< 0.8x), réponds VETO.
 4. QUALITÉ DU RENFORCEMENT : S'il s'agit d'un pyramiding, le momentum justifie-t-il réellement d'augmenter la taille de la position ?
 
     Règle de décision : Si l'un des 4 points présente un risque majeur, réponds VETO. Sinon, réponds VALIDÉ.
-    
+
     Format de réponse strict :
     DECISION: [VALIDÉ ou VETO]
     RAISON: [Ton explication concise en une phrase citant le critère déterminant]
     """
 
-    # 1. Avis de Gemini
     gemini_decision, gemini_reason, gemini_api_failed = "VETO", "Clé API GEMINI_API_KEY absente", True
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         gemini_decision, gemini_reason, gemini_api_failed = _query_gemini_with_retry(prompt, gemini_key)
-    
-    if gemini_api_failed:
+    if gemini_api_failed and gemini_key:
         send_ai_error_alert("Gemini", f"[{symbol}] {gemini_reason}")
 
-    # 2. Avis d'OpenAI (ChatGPT)
     openai_decision, openai_reason, openai_api_failed = "VETO", "Clé API OPENAI_API_KEY absente", True
     openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
@@ -100,9 +108,9 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
                 o_resp = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.2
+                    temperature=0.2,
                 )
-                text = o_resp.choices[0].message.content.strip()
+                text = (o_resp.choices[0].message.content or "").strip()
                 openai_decision = _parse_ai_decision(text)
                 openai_reason = text
                 openai_api_failed = False
@@ -113,24 +121,23 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
                     continue
                 openai_reason = f"Erreur OpenAI: {e}"
                 openai_api_failed = True
-
-    if openai_api_failed:
+    if openai_api_failed and openai_key:
         send_ai_error_alert("OpenAI", f"[{symbol}] {openai_reason}")
 
-    # 3. Affichage des rapports et Arbitrage du Double Check
     print(f"\n💬 [Comité Gemini] : {gemini_reason}", flush=True)
     print(f"💬 [Comité OpenAI] : {openai_reason}", flush=True)
 
-    # Cas idéal : Double validation unanime
-    if gemini_decision == "VALIDÉ" and openai_decision == "VALIDÉ":
-        return "VALIDÉ", "Double consensus IA obtenu (Gemini + OpenAI)."
+    # Si les deux IA ont échoué techniquement, repli quantitatif local prudent (sans bloquer sur un bug réseau)
+    if gemini_api_failed and openai_api_failed:
+        if score >= 80 and "BAISSIER" not in str(trend).upper():
+            return "VALIDÉ", "Repli quantitatif local : score >= 80 hors marché baissier (IA indisponibles)."
+        return "VETO", "Repli quantitatif local : IA indisponibles et score/contexte insuffisant."
 
-    # Cas de secours : Une des deux IA subit une panne réseau/quota, l'autre valide ET score >= 80
-    if gemini_api_failed and not openai_api_failed and openai_decision == "VALIDÉ" and score >= 80:
-        return "VALIDÉ", f"Validation hybride (OpenAI + Secours Quantitatif Score {score}/100 suite à indisponibilité Gemini)."
+    # Règle du comité : tout VETO explicite d'une IA qui a répondu bloque l'entrée
+    if (not gemini_api_failed and gemini_decision == "VETO") or (not openai_api_failed and openai_decision == "VETO"):
+        return "VETO", "Veto prononcé par au moins un membre du comité."
 
-    if openai_api_failed and not gemini_api_failed and gemini_decision == "VALIDÉ" and score >= 80:
-        return "VALIDÉ", f"Validation hybride (Gemini + Secours Quantitatif Score {score}/100 suite à indisponibilité OpenAI)."
+    if gemini_decision == "VALIDÉ" or openai_decision == "VALIDÉ":
+        return "VALIDÉ", "Configuration validée par le comité."
 
-    # Cas par défaut : Veto ou désaccord réel
-    return "VETO", "Désaccord des IA, absence de crédits ou Veto prononcé."
+    return "VETO", "Aucun consensus de validation."
