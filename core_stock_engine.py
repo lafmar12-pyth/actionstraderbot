@@ -15,36 +15,42 @@ from telegram_notifier import send_telegram_alert
 
 STATE_FILE = "stock_bot_state.json"
 
+COOLDOWN_DAYS_AFTER_LOSS = 3
+MAX_LOSSES_IN_5_DAYS = 2
+MIN_NEW_ENTRY_SCORE = 72
+MIN_PYRAMID_SCORE = 82
+
+
 class StockSwingEngine:
     def __init__(self, initial_capital=1000.0):
         self.api_key = os.getenv("ALPACA_API_KEY")
         self.secret_key = os.getenv("ALPACA_SECRET_KEY")
-        
+
         if not self.api_key or not self.secret_key:
             raise ValueError("Les clés ALPACA_API_KEY ou ALPACA_SECRET_KEY sont manquantes.")
 
         self.trading_client = TradingClient(self.api_key, self.secret_key, paper=True)
         self.data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
-        
+
         # Univers de 30 actions (US & Canada) pour l'observation et le swing trading
         self.symbols = [
             # Tech & Croissance (10)
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "AVGO", "NFLX",
             # Canada / Finance / Rail / Commerce (6)
-            'SHOP', 'TD', 'RY', 'CNI', 'BNS', 'CRM',
+            "SHOP", "TD", "RY", "CNI", "BNS", "CRM",
             # Finance US, Santé, Consommation & Défensives (14)
-            'JPM', 'V', 'MA', 'UNH', 'HD', 'PG', 'COST', 'DIS', 'PEP', 'KO', 'WMT', 'LLY', 'CAT', 'XOM'
+            "JPM", "V", "MA", "UNH", "HD", "PG", "COST", "DIS", "PEP", "KO", "WMT", "LLY", "CAT", "XOM",
         ]
-        
+
         # Gestion du risque & Pyramiding
         self.tranche_pct = 0.02          # 2% nominal par tranche
         self.max_per_stock_pct = 0.08    # 8% max par action (4 tranches)
         self.max_capital_usage = 0.40    # 40% max global
-        
+
         self.take_profit_pct = 0.06      # Take-profit à +6%
         self.base_stop_loss_pct = -0.03  # Stop-loss initial à -3% (Palier 1)
         self.min_gain_to_pyramid = 0.01  # +1% de gain minimum pour renforcer
-        
+
         self.load_state()
 
     def load_state(self):
@@ -54,12 +60,12 @@ class StockSwingEngine:
             "last_buy_dates": {},
             "market_journal": {
                 "signals": [],
-                "stats": {"total_5d": 0, "wins_5d": 0}
-            }
+                "stats": {"total_5d": 0, "wins_5d": 0},
+            },
         }
         if os.path.exists(STATE_FILE):
             try:
-                with open(STATE_FILE, 'r') as f:
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
                     self.trade_history = loaded
@@ -79,14 +85,14 @@ class StockSwingEngine:
 
     def save_state(self):
         self.trade_history["last_run"] = datetime.now(timezone.utc).isoformat()
-        with open(STATE_FILE, 'w') as f:
-            json.dump(self.trade_history, f, indent=4)
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.trade_history, f, indent=4, ensure_ascii=False)
 
     def is_market_open(self):
         try:
-            return self.trading_client.get_clock().is_open
+            return bool(self.trading_client.get_clock().is_open)
         except Exception as e:
-            print(f"⚠️ Impossible de vérifier l'état du marché: {e}")
+            print(f"⚠️ Impossible de vérifier l'état du marché: {e}", flush=True)
             return False
 
     def get_historical_bars(self, symbol: str, calendar_days: int = 120) -> pd.DataFrame:
@@ -98,7 +104,7 @@ class StockSwingEngine:
             timeframe=TimeFrame.Day,
             start=start_date,
             end=end_date,
-            feed=DataFeed.IEX
+            feed=DataFeed.IEX,
         )
 
         df = self.data_client.get_stock_bars(request_params).df
@@ -106,7 +112,7 @@ class StockSwingEngine:
             return pd.DataFrame()
 
         df = df.reset_index().rename(columns={
-            'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+            "open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume",
         })
         return df
 
@@ -115,58 +121,86 @@ class StockSwingEngine:
         try:
             spy_df = self.get_historical_bars("SPY", calendar_days=45)
             if len(spy_df) >= 20:
-                spy_sma20 = spy_df['Close'].rolling(window=20).mean().iloc[-1]
-                spy_close = float(spy_df['Close'].iloc[-1])
-                diff_pct = ((spy_close - spy_sma20) / spy_sma20) * 100
+                spy_sma20 = float(spy_df["Close"].rolling(window=20).mean().iloc[-1])
+                spy_close = float(spy_df["Close"].iloc[-1])
+                diff_pct = ((spy_close - spy_sma20) / spy_sma20) * 100.0
                 if spy_close > spy_sma20:
                     return f"HAUSSIER (SPY à {spy_close:.2f}$, {diff_pct:+.2f}% au-dessus de SMA20)"
-                else:
-                    return f"BAISSIER / PRUDENCE (SPY à {spy_close:.2f}$, {diff_pct:+.2f}% sous SMA20)"
+                return f"BAISSIER / PRUDENCE (SPY à {spy_close:.2f}$, {diff_pct:+.2f}% sous SMA20)"
         except Exception as e:
-            print(f"⚠️ Impossible de récupérer la tendance SPY : {e}")
+            print(f"⚠️ Impossible de récupérer la tendance SPY : {e}", flush=True)
         return "NEUTRE_BOURSE"
 
     def evaluate_stock_opportunity(self, df):
-        if len(df) < 50:
-            return 0, "Pas de signal", {"above_sma20": False, "vol_ratio": 1.0}
+        """Évalue la structure de tendance, le rebond/momentum et le volume relatif sur données journalières."""
+        if len(df) < 55:
+            return 0, "Données insuffisantes (<55 séances)", {"above_sma20": False, "vol_ratio": 1.0}
 
-        df['SMA20'] = df['Close'].rolling(window=20).mean()
-        df['SMA50'] = df['Close'].rolling(window=50).mean()
-        df['VOL20'] = df['Volume'].rolling(window=20).mean()
-        
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        df = df.copy()
+        df["SMA20"] = df["Close"].rolling(window=20).mean()
+        df["SMA50"] = df["Close"].rolling(window=50).mean()
+        df["VOL20"] = df["Volume"].rolling(window=20).mean()
+
+        delta = df["Close"].diff()
+        gain = delta.where(delta > 0, 0.0).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0.0)).rolling(window=14).mean()
+        rs = gain / loss.replace(0.0, pd.NA)
+        df["RSI"] = (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
 
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
+        sma50_prev = float(df["SMA50"].iloc[-6]) if len(df) >= 6 and pd.notna(df["SMA50"].iloc[-6]) else float(last_row["SMA50"])
+
+        if pd.isna(last_row["SMA20"]) or pd.isna(last_row["SMA50"]) or float(last_row["SMA50"]) <= 0:
+            return 0, "Indicateurs indisponibles", {"above_sma20": False, "vol_ratio": 1.0}
+
+        close_now = float(last_row["Close"])
+        close_prev = float(prev_row["Close"])
+        sma20 = float(last_row["SMA20"])
+        sma50 = float(last_row["SMA50"])
+        rsi = float(last_row["RSI"])
+
+        avg_vol = float(last_row["VOL20"]) if pd.notna(last_row["VOL20"]) else 0.0
+        vol_ratio = float(last_row["Volume"] / avg_vol) if avg_vol > 0 else 1.0
+        sma50_slope_pct = ((sma50 - sma50_prev) / sma50_prev) * 100.0 if sma50_prev > 0 else 0.0
+
+        not_dumping = close_now >= close_prev * 0.985
+        healthy_volume = vol_ratio >= 0.80
 
         score = 0
         reasons = []
 
-        if last_row['SMA20'] > last_row['SMA50']:
+        if sma20 > sma50 and sma50_slope_pct > -0.30:
             score += 35
-            reasons.append("Tendance haussière (SMA20 > SMA50)")
+            reasons.append(f"Structure haussière (SMA20 > SMA50, pente50 {sma50_slope_pct:+.2f}%)")
 
-        if prev_row['Low'] <= prev_row['SMA20'] and last_row['Close'] > last_row['SMA20']:
+        if float(prev_row["Low"]) <= float(prev_row["SMA20"]) * 1.005 and close_now > sma20 and not_dumping:
             score += 35
-            reasons.append("Rebond sur la SMA20")
+            reasons.append("Rebond propre sur SMA20")
+        elif close_now > sma20 and not_dumping:
+            score += 20
+            reasons.append("Cours soutenu au-dessus de SMA20")
 
-        if 40 <= last_row['RSI'] <= 65:
-            score += 30
-            reasons.append(f"RSI optimal ({last_row['RSI']:.1f})")
+        if 42.0 <= rsi <= 65.0:
+            score += 20
+            reasons.append(f"RSI sain ({rsi:.1f})")
 
-        avg_vol = last_row['VOL20']
-        vol_ratio = float(last_row['Volume'] / avg_vol) if pd.notna(avg_vol) and avg_vol > 0 else 1.0
-        reasons.append(f"Volume: {vol_ratio:.1f}x moy. 20j")
+        if healthy_volume:
+            score += 10
+            reasons.append(f"Volume confirmé ({vol_ratio:.1f}x)")
+        else:
+            reasons.append(f"Volume faible ({vol_ratio:.1f}x)")
+
+        if not not_dumping:
+            score = max(0, score - 25)
+            reasons.append("Repli journalier marqué")
 
         metrics = {
-            "above_sma20": bool(pd.notna(last_row['SMA20']) and last_row['Close'] > last_row['SMA20']),
-            "vol_ratio": vol_ratio
+            "above_sma20": bool(close_now > sma20),
+            "vol_ratio": vol_ratio,
         }
 
-        return score, " | ".join(reasons) if reasons else "Pas de signal", metrics
+        return int(min(100, score)), " | ".join(reasons) if reasons else "Pas de signal", metrics
 
     def compute_volatility_adjusted_tranche(self, df: pd.DataFrame, total_portfolio: float):
         """Module la tranche nominale de 2% selon l'amplitude journalière moyenne sur 14 jours (ADR%)."""
@@ -175,20 +209,31 @@ class StockSwingEngine:
             return total_portfolio * base_pct, base_pct * 100, 0.0
 
         recent = df.tail(14)
-        valid = recent[recent['Close'] > 0]
+        valid = recent[recent["Close"] > 0]
         if valid.empty:
             return total_portfolio * base_pct, base_pct * 100, 0.0
 
-        adr_pct = float(((valid['High'] - valid['Low']) / valid['Close']).mean())
+        adr_pct = float(((valid["High"] - valid["Low"]) / valid["Close"]).mean())
         if adr_pct > 0.035:
-            multiplier = 0.75   # 1.5% sur titres très volatils
+            multiplier = 0.75
         elif adr_pct < 0.015:
-            multiplier = 1.25   # 2.5% sur titres calmes
+            multiplier = 1.25
         else:
-            multiplier = 1.00   # 2.0% nominal
+            multiplier = 1.00
 
         adj_pct = base_pct * multiplier
         return total_portfolio * adj_pct, adj_pct * 100, adr_pct * 100
+
+    def _parse_iso_utc(self, iso_str):
+        if not iso_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
 
     def _record_closed_trade(self, symbol: str, reason_tag: str, plpc: float, pl_dollars: float):
         """Enregistre la clôture d'une position pour calculer l'espérance mathématique réelle."""
@@ -198,7 +243,7 @@ class StockSwingEngine:
             "reason": reason_tag,
             "symbol": symbol,
             "realized_plpc": round(plpc * 100, 2),
-            "realized_pl": round(pl_dollars, 2)
+            "realized_pl": round(pl_dollars, 2),
         })
 
     def compute_expectancy_stats(self) -> dict:
@@ -225,8 +270,48 @@ class StockSwingEngine:
             "win_rate": round(p_win * 100, 1),
             "avg_win": round(avg_win, 2),
             "avg_loss": round(avg_loss, 2),
-            "expectancy": round(expectancy, 2)
+            "expectancy": round(expectancy, 2),
         }
+
+    def can_open_stock_trade(self, candidate: dict, now_utc: datetime, exp_stats: dict) -> tuple[bool, str]:
+        """Garde-fous Trader Pro adaptés au swing trading actions."""
+        symbol = candidate["symbol"]
+        is_pyramid = bool(candidate.get("is_pyramid"))
+        score = int(candidate["score"])
+
+        closed_trades = [
+            t for t in self.trade_history.get("trades", [])
+            if t.get("type") == "CLÔTURE" and isinstance(t.get("realized_plpc"), (int, float))
+        ]
+
+        # 1. Pause défensive sur les nouvelles entrées après >= 2 pertes en 5 jours
+        if not is_pyramid:
+            cutoff_5d = now_utc - timedelta(days=5)
+            recent_losses_5d = 0
+            for t in closed_trades:
+                dt = self._parse_iso_utc(t.get("date"))
+                if float(t.get("realized_plpc", 0.0)) < 0 and dt and dt >= cutoff_5d:
+                    recent_losses_5d += 1
+            if recent_losses_5d >= MAX_LOSSES_IN_5_DAYS:
+                return False, f"Pause nouvelles entrées : {recent_losses_5d} clôture(s) perdante(s) en 5j."
+
+        # 2. Cooldown sur le titre après une clôture perdante
+        cooldown_cutoff = now_utc - timedelta(days=COOLDOWN_DAYS_AFTER_LOSS)
+        for t in reversed(closed_trades):
+            if t.get("symbol") != symbol:
+                continue
+            if float(t.get("realized_plpc", 0.0)) < 0:
+                dt = self._parse_iso_utc(t.get("date"))
+                if dt and dt >= cooldown_cutoff:
+                    days_left = max(0.1, (dt + timedelta(days=COOLDOWN_DAYS_AFTER_LOSS) - now_utc).total_seconds() / 86400.0)
+                    return False, f"Cooldown actif sur {symbol} après perte ({t.get('realized_plpc'):+.2f}%) — ~{days_left:.1f}j restants."
+            break
+
+        # 3. Cohérence avec l'espérance historique réalisée
+        if not is_pyramid and exp_stats.get("count", 0) >= 4 and exp_stats.get("expectancy", 0.0) < -1.0 and score < 85:
+            return False, f"Espérance historique négative ({exp_stats['expectancy']:+.2f}%) et score {score} < 85."
+
+        return True, "Validé"
 
     def _record_and_evaluate_observations(self, snapshots: list, today_str: str):
         """Enregistre les signaux >= 65 sur les 30 actions et évalue ceux d'au moins 7 jours calendaires (~5 séances)."""
@@ -244,7 +329,7 @@ class StockSwingEngine:
                     continue
                 if (today_date - obs_date).days >= 7 and obs["price"] > 0:
                     exit_ref = price_map[obs["symbol"]]
-                    ret_pct = ((exit_ref - obs["price"]) / obs["price"]) * 100
+                    ret_pct = ((exit_ref - obs["price"]) / obs["price"]) * 100.0
                     obs["evaluated_5d"] = True
                     obs["return_5d_pct"] = round(ret_pct, 2)
                     stats["total_5d"] += 1
@@ -252,7 +337,7 @@ class StockSwingEngine:
                         stats["wins_5d"] += 1
 
         for item in snapshots:
-            if item["score"] >= 65:
+            if item["score"] >= MIN_NEW_ENTRY_SCORE:
                 already_logged_today = any(
                     s["symbol"] == item["symbol"] and s["date"][:10] == today_str for s in signals
                 )
@@ -263,7 +348,7 @@ class StockSwingEngine:
                         "price": round(item["price"], 2),
                         "score": item["score"],
                         "regime": item["regime"],
-                        "evaluated_5d": False
+                        "evaluated_5d": False,
                     })
 
         journal["signals"] = signals[-100:]
@@ -272,14 +357,14 @@ class StockSwingEngine:
         """Construit un résumé statistique sobre des 30 actions pour le comité IA."""
         evaluated_count = sum(1 for s in snapshots if s.get("analyzed"))
         above_sma20_count = sum(1 for s in snapshots if s.get("above_sma20"))
-        breadth_pct = (above_sma20_count / evaluated_count * 100) if evaluated_count > 0 else 0.0
+        breadth_pct = (above_sma20_count / evaluated_count * 100.0) if evaluated_count > 0 else 0.0
 
         stats = self.trade_history.get("market_journal", {}).get("stats", {})
         total_5d = stats.get("total_5d", 0)
         wins_5d = stats.get("wins_5d", 0)
 
         if total_5d >= 10:
-            win_rate = (wins_5d / total_5d) * 100
+            win_rate = (wins_5d / total_5d) * 100.0
             perf_str = f"Taux rebonds positifs ~5j: {win_rate:.1f}% ({wins_5d}/{total_5d})"
         else:
             perf_str = f"Historique signaux ~5j en cours ({total_5d}/10 évalués)"
@@ -319,27 +404,29 @@ class StockSwingEngine:
             unrealized_plpc = float(pos.unrealized_plpc)
             unrealized_pl = float(pos.unrealized_pl)
             market_value = float(pos.market_value)
-            weight_pct = (market_value / total_portfolio) * 100 if total_portfolio > 0 else 0
-            tranches_est = max(1, round(weight_pct / (self.tranche_pct * 100)))
+            weight_pct = (market_value / total_portfolio) * 100.0 if total_portfolio > 0 else 0.0
+            tranches_est = max(1, round(weight_pct / (self.tranche_pct * 100.0)))
 
-            # Stop-Loss dynamique selon le palier de pyramiding
             if tranches_est >= 3:
-                dynamic_sl = 0.00   # Break-Even (0%) dès 6% ou 8% d'exposition
+                dynamic_sl = 0.00
             elif tranches_est == 2:
-                dynamic_sl = -0.01  # Resserré à -1% dès 4% d'exposition
+                dynamic_sl = -0.01
             else:
-                dynamic_sl = self.base_stop_loss_pct  # -3% sur la 1ère tranche (2%)
+                dynamic_sl = self.base_stop_loss_pct
 
-            print(f"   • {symbol:6} | Palier {tranches_est}/4 ({weight_pct:4.1f}%) | P&L: {unrealized_plpc*100:+6.2f}% | SL actif: {dynamic_sl*100:+.1f}%")
+            print(
+                f"   • {symbol:6} | Palier {tranches_est}/4 ({weight_pct:4.1f}%) | "
+                f"P&L: {unrealized_plpc*100:+6.2f}% | SL actif: {dynamic_sl*100:+.1f}%",
+                flush=True,
+            )
 
-            # Protection Anti-Day Trading (PDT)
             last_buy_date = self.trade_history.get("last_buy_dates", {}).get(symbol)
             if last_buy_date == today_str and unrealized_plpc > -0.05:
-                print(f"     ⏳ Position ouverte aujourd'hui ({today_str}) : maintien jusqu'à demain (Règle Swing / Anti-PDT).")
+                print(f"     ⏳ Position ouverte aujourd'hui ({today_str}) : maintien jusqu'à demain (Règle Swing / Anti-PDT).", flush=True)
                 continue
 
             if unrealized_plpc >= self.take_profit_pct:
-                print(f"   🎯 TAKE-PROFIT atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !")
+                print(f"   🎯 TAKE-PROFIT atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !", flush=True)
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
                 self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
@@ -349,7 +436,7 @@ class StockSwingEngine:
 
             elif unrealized_plpc <= dynamic_sl:
                 sl_type = "BREAK-EVEN" if dynamic_sl == 0.0 else "STOP-LOSS"
-                print(f"   🛑 {sl_type} atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !")
+                print(f"   🛑 {sl_type} atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !", flush=True)
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
                 self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
@@ -360,7 +447,8 @@ class StockSwingEngine:
         return closed_count
 
     def run_cycle(self):
-        print(f"[{datetime.now(timezone.utc).isoformat()}] Lancement du cycle Swing Trading Actions...", flush=True)
+        now_utc = datetime.now(timezone.utc)
+        print(f"[{now_utc.isoformat()}] Lancement du cycle Swing Trading Actions...", flush=True)
 
         if not self.is_market_open():
             print("💤 Le marché boursier est actuellement FERMÉ. Cycle ignoré.", flush=True)
@@ -373,31 +461,29 @@ class StockSwingEngine:
         max_exposure_capital = total_portfolio * self.max_capital_usage
 
         open_positions = self.trading_client.get_all_positions()
-        
         if self.manage_open_positions(open_positions, total_portfolio) > 0:
             open_positions = self.trading_client.get_all_positions()
 
-        # Vérification des ordres d'achat en attente
         open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
         pending_buy_symbols = {o.symbol for o in open_orders if o.side == OrderSide.BUY}
 
         positions_map = {pos.symbol: pos for pos in open_positions}
         current_invested = sum(float(pos.market_value) for pos in open_positions)
-        current_exposure_pct = (current_invested / total_portfolio) * 100 if total_portfolio > 0 else 0
+        current_exposure_pct = (current_invested / total_portfolio) * 100.0 if total_portfolio > 0 else 0.0
 
-        # Météo macroéconomique via SPY
         market_trend = self.get_market_macro_trend()
         regime_tag = "HAUSSIER" if "HAUSSIER" in market_trend else ("BAISSIER" if "BAISSIER" in market_trend else "NEUTRE")
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_str = now_utc.strftime("%Y-%m-%d")
 
         exp_stats = self.compute_expectancy_stats()
-        print(f"\n💰 Portefeuille : {total_portfolio:.2f} $ | Tranche nominale (2%) : {nominal_tranche:.2f} $")
-        print(f"📊 Exposition globale : {current_invested:.2f} $ ({current_exposure_pct:.1f}% / 40.0% max)")
-        print(f"🌍 Météo Marché : {market_trend}")
+        print(f"\n💰 Portefeuille : {total_portfolio:.2f} $ | Tranche nominale (2%) : {nominal_tranche:.2f} $", flush=True)
+        print(f"📊 Exposition globale : {current_invested:.2f} $ ({current_exposure_pct:.1f}% / 40.0% max)", flush=True)
+        print(f"🌍 Météo Marché : {market_trend}", flush=True)
         if exp_stats["count"] > 0:
             print(
                 f"📈 Espérance réelle ({exp_stats['count']} clôtures) : {exp_stats['expectancy']:+.2f}% "
-                f"| Win rate : {exp_stats['win_rate']:.1f}% | Gain moy. : +{exp_stats['avg_win']:.2f}% | Perte moy. : -{exp_stats['avg_loss']:.2f}%"
+                f"| Win rate : {exp_stats['win_rate']:.1f}% | Gain moy. : +{exp_stats['avg_win']:.2f}% | Perte moy. : -{exp_stats['avg_loss']:.2f}%",
+                flush=True,
             )
 
         candidates = []
@@ -410,7 +496,7 @@ class StockSwingEngine:
                 if df.empty:
                     continue
 
-                current_price = float(df['Close'].iloc[-1])
+                current_price = float(df["Close"].iloc[-1])
                 score, reason, metrics = self.evaluate_stock_opportunity(df)
                 tranche_capital, adj_pct, adr_pct = self.compute_volatility_adjusted_tranche(df, total_portfolio)
 
@@ -419,108 +505,140 @@ class StockSwingEngine:
                     "price": current_price,
                     "score": score,
                     "regime": regime_tag,
-                    "analyzed": len(df) >= 50,
-                    "above_sma20": metrics["above_sma20"]
+                    "analyzed": len(df) >= 55,
+                    "above_sma20": metrics["above_sma20"],
                 })
 
                 if symbol in pending_buy_symbols:
-                    print(f"   • {symbol:10} | Ordre d'achat déjà en attente chez Alpaca - Ignoré")
+                    print(f"   • {symbol:10} | Ordre d'achat déjà en attente chez Alpaca - Ignoré", flush=True)
                     continue
 
                 existing_pos = positions_map.get(symbol)
                 current_stock_value = float(existing_pos.market_value) if existing_pos else 0.0
-                current_stock_pct = (current_stock_value / total_portfolio) * 100 if total_portfolio > 0 else 0.0
+                current_stock_pct = (current_stock_value / total_portfolio) * 100.0 if total_portfolio > 0 else 0.0
 
                 if not existing_pos:
-                    print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | ADR14: {adr_pct:4.1f}% ({adj_pct:4.1f}%) | Score: {score:3}/100 | {reason}")
-                    if score >= 65 and (current_stock_value + tranche_capital) <= (max_per_stock_capital * 1.05):
+                    print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | ADR14: {adr_pct:4.1f}% ({adj_pct:4.1f}%) | Score: {score:3}/100 | {reason}", flush=True)
+                    if score >= MIN_NEW_ENTRY_SCORE and (current_stock_value + tranche_capital) <= (max_per_stock_capital * 1.05):
                         candidates.append({
-                            'symbol': symbol, 'price': current_price, 'score': score,
-                            'tranche_capital': tranche_capital, 'adj_pct': adj_pct,
-                            'reason': f"[Entrée 1/4 - {adj_pct:.1f}%] {reason}", 'is_pyramid': False, 'tranche_num': 1
+                            "symbol": symbol,
+                            "price": current_price,
+                            "score": score,
+                            "tranche_capital": tranche_capital,
+                            "adj_pct": adj_pct,
+                            "reason": f"[Entrée 1/4 - {adj_pct:.1f}%] {reason}",
+                            "is_pyramid": False,
+                            "tranche_num": 1,
                         })
                 else:
                     unrealized_plpc = float(existing_pos.unrealized_plpc)
                     next_tranche = min(4, round(current_stock_pct / 2.0) + 1)
-                    print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | ADR14: {adr_pct:4.1f}% | Score: {score:3}/100 | En cours ({current_stock_pct:.1f}%, P&L: {unrealized_plpc*100:+.1f}%)")
+                    print(
+                        f"   • {symbol:10} | Prix: {current_price:8.2f}$ | ADR14: {adr_pct:4.1f}% | "
+                        f"Score: {score:3}/100 | En cours ({current_stock_pct:.1f}%, P&L: {unrealized_plpc*100:+.1f}%)",
+                        flush=True,
+                    )
 
                     if (current_stock_value + tranche_capital) <= (max_per_stock_capital * 1.05):
-                        if score >= 80 and unrealized_plpc >= self.min_gain_to_pyramid:
+                        if score >= MIN_PYRAMID_SCORE and unrealized_plpc >= self.min_gain_to_pyramid:
                             candidates.append({
-                                'symbol': symbol, 'price': current_price, 'score': score + 5,
-                                'tranche_capital': tranche_capital, 'adj_pct': adj_pct,
-                                'reason': f"[Renforcement {next_tranche}/4 -> +{adj_pct:.1f}%] P&L {unrealized_plpc*100:+.1f}% | {reason}",
-                                'is_pyramid': True, 'tranche_num': next_tranche
+                                "symbol": symbol,
+                                "price": current_price,
+                                "score": min(100, score + 5),
+                                "tranche_capital": tranche_capital,
+                                "adj_pct": adj_pct,
+                                "reason": f"[Renforcement {next_tranche}/4 -> +{adj_pct:.1f}%] P&L {unrealized_plpc*100:+.1f}% | {reason}",
+                                "is_pyramid": True,
+                                "tranche_num": next_tranche,
                             })
             except Exception as e:
-                print(f"   ⚠️ Erreur d'analyse sur {symbol}: {e}")
+                print(f"   ⚠️ Erreur d'analyse sur {symbol}: {e}", flush=True)
 
-        # Mise à jour de l'observatoire des 30 actions même sans achat ni vente
         self._record_and_evaluate_observations(snapshots, today_str)
         enriched_memory = self._build_market_memory_summary(snapshots)
 
         if candidates:
-            candidates.sort(key=lambda x: x['score'], reverse=True)
-            best_choice = candidates[0]
-            chosen_tranche = best_choice['tranche_capital']
+            candidates.sort(key=lambda x: x["score"], reverse=True)
 
+            best_choice = None
+            for cand in candidates:
+                allowed, block_reason = self.can_open_stock_trade(cand, now_utc, exp_stats)
+                if not allowed:
+                    print(f"🛡️ [Filtre Pro Actions] {cand['symbol']} ignoré : {block_reason}", flush=True)
+                    continue
+                best_choice = cand
+                break
+
+            if not best_choice:
+                print("😴 Aucun candidat ne passe les garde-fous pro actions (mode flat / maintien).", flush=True)
+                self.save_state()
+                return
+
+            chosen_tranche = best_choice["tranche_capital"]
             if (current_invested + chosen_tranche) > max_exposure_capital:
                 print(f"🛑 Plafond global de 40% atteint ({current_exposure_pct:.1f}%). Aucun nouvel achat.", flush=True)
                 self.save_state()
                 return
 
-            clean_symbol = best_choice['symbol']
-            action_label = f"RENFORCEMENT ({best_choice['tranche_num']}/4)" if best_choice['is_pyramid'] else "NOUVELLE ENTRÉE (1/4)"
+            clean_symbol = best_choice["symbol"]
+            action_label = f"RENFORCEMENT ({best_choice['tranche_num']}/4)" if best_choice["is_pyramid"] else "NOUVELLE ENTRÉE (1/4)"
 
-            print(f"\n🧠 Soumission du dossier Swing {clean_symbol} [{action_label}] au comité multi-IA...")
+            print(f"\n🧠 Soumission du dossier Swing {clean_symbol} [{action_label}] au comité multi-IA...", flush=True)
 
             decision, feedback = ask_dual_ai_decision(
-                clean_symbol, best_choice['price'], min(100, best_choice['score']),
-                best_choice['reason'], market_trend, list(positions_map.keys()),
-                enriched_memory
+                clean_symbol,
+                best_choice["price"],
+                min(100, best_choice["score"]),
+                best_choice["reason"],
+                market_trend,
+                list(positions_map.keys()),
+                enriched_memory,
             )
 
             if decision == "VALIDÉ":
-                qty_to_buy = round(chosen_tranche / best_choice['price'], 2)
-                print(f"🔥 Exécution {action_label} Alpaca : +{qty_to_buy} actions de {clean_symbol} ({chosen_tranche:.2f}$ / {best_choice['adj_pct']:.1f}%)")
-                
-                # 1. Ordre d'achat au marché après nettoyage d'éventuels ordres résiduels
+                qty_to_buy = round(chosen_tranche / best_choice["price"], 2)
+                print(f"🔥 Exécution {action_label} Alpaca : +{qty_to_buy} actions de {clean_symbol} ({chosen_tranche:.2f}$ / {best_choice['adj_pct']:.1f}%)", flush=True)
+
                 self._cancel_open_orders_for_symbol(clean_symbol)
                 market_order_data = MarketOrderRequest(
                     symbol=clean_symbol, qty=qty_to_buy, side=OrderSide.BUY, time_in_force=TimeInForce.DAY
                 )
                 self.trading_client.submit_order(order_data=market_order_data)
 
-                # 2. Trailing Stop permanent chez Alpaca (resserré à 1.5% dès le palier 2/4)
                 whole_qty = int(qty_to_buy)
-                trail_pct = 1.5 if best_choice['tranche_num'] >= 2 else 3.0
+                trail_pct = 1.5 if best_choice["tranche_num"] >= 2 else 3.0
                 if whole_qty >= 1:
                     try:
                         trailing_stop = TrailingStopOrderRequest(
-                            symbol=clean_symbol, qty=whole_qty, side=OrderSide.SELL,
-                            time_in_force=TimeInForce.GTC, trail_percent=trail_pct
+                            symbol=clean_symbol,
+                            qty=whole_qty,
+                            side=OrderSide.SELL,
+                            time_in_force=TimeInForce.GTC,
+                            trail_percent=trail_pct,
                         )
                         self.trading_client.submit_order(order_data=trailing_stop)
                     except Exception as e:
-                        print(f"   ℹ️ Trailing Stop serveur non placé (géré par le bot) : {e}")
-                
+                        print(f"   ℹ️ Trailing Stop serveur non placé (géré par le bot) : {e}", flush=True)
+
                 self.trade_history["last_buy_dates"][clean_symbol] = today_str
                 self.trade_history["trades"].append({
-                    "date": datetime.now(timezone.utc).isoformat(),
+                    "date": now_utc.isoformat(),
                     "type": action_label,
                     "symbol": clean_symbol,
                     "qty": qty_to_buy,
-                    "price": best_choice['price'],
+                    "price": best_choice["price"],
                     "allocated": round(chosen_tranche, 2),
-                    "tranche_pct_used": round(best_choice['adj_pct'], 2)
+                    "tranche_pct_used": round(best_choice["adj_pct"], 2),
                 })
-                
+
                 send_telegram_alert(
                     f"📈 *{action_label}* : `+{qty_to_buy}` actions de `{clean_symbol}` à `{best_choice['price']:.2f}$` (`{best_choice['adj_pct']:.1f}%`)\n"
                     f"• Palier cible : `{best_choice['tranche_num']}/4` (`8%` max/titre)\n"
                     f"• Exposition globale : `{(current_invested + chosen_tranche)/total_portfolio*100:.1f}% / 40%`"
                 )
             else:
-                print(f"🛡️ [VETO IA] Ordre annulé : {feedback}")
+                print(f"🛡️ [VETO IA] Ordre annulé : {feedback}", flush=True)
+        else:
+            print("😴 Aucun signal action n'atteint le seuil requis sur ce cycle.", flush=True)
 
         self.save_state()
