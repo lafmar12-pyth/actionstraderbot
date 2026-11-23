@@ -2,7 +2,7 @@
     "current_position": "AAPL",
     "entry_price": 351.85,
     "last_buy_dates": {},
-    "last_run": "2026-11-23T15:36:35.723118+00:00",
+    "last_run": "2026-11-23T17:53:53.380733+00:00",
     "trades": [],
     "market_journal": {
         "signals": [
@@ -243,6 +243,14 @@
                 "symbol": "WMT",
                 "price": 128.2,
                 "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-23",
+                "symbol": "AAPL",
+                "price": 348.42,
+                "score": 90,
                 "regime": "BAISSIER",
                 "evaluated_5d": false
             }
