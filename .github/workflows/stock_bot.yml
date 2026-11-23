@@ -29,7 +29,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install --upgrade alpaca-py
 
       - name: Run Stock Swing Bot
         env:
@@ -42,13 +41,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python stock_main_runner.py
 
-      - name: Commit and push updated stock bot state
+      - name: Commit and push updated stock bot state and memory
         run: |
           git config --global user.name "GitHub Actions Stock Bot"
           git config --global user.email "actions@github.com"
-          git add stock_bot_state.json || true
-          git commit -m "Auto: Update stock bot state [skip ci]" || true
-          git push origin main || echo "⚠️ Pas de changement d'état à commiter."
+          git add stock_bot_state.json stock_learning_library.json stock_market_memory.json 2>/dev/null || git add stock_bot_state.json || true
+          git commit -m "Auto: Update stock bot state and memory [skip ci]" || true
+          git push origin main
 
       - name: Notify Telegram on Workflow Failure
         if: failure()
@@ -59,4 +58,4 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="Markdown" \
-            -d text="❌ *Échec critique du workflow GitHub Actions* (Stock Swing Trading Bot). Vérifiez les logs sur GitHub."
+            -d text="❌ *Échec critique du workflow GitHub Actions* (Stock Swing Trading Bot — run #${{ github.run_number }}). Vérifiez les logs sur GitHub."
