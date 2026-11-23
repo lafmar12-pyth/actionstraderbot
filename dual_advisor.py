@@ -2,9 +2,12 @@
 import os
 import time
 import functools
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from openai import OpenAI
 from telegram_notifier import send_ai_error_alert
+
+GEMINI_MODEL = "gemini-3.8-flash"
 
 
 def safe_api_call(max_retries=3, delay=3):
