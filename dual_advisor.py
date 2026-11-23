@@ -74,7 +74,7 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
 - Actif candidat : {symbol} à {price}$
 - Signaux techniques & Volume : {score}/100 ({reason})
 - Tendance générale du marché (S&P 500) : {trend}
-- Règle de gestion : 2% du portefeuille par tranche (pyramiding progressif autorisé jusqu'à 8% max par action en 4 tranches, plafond global 40%).
+- Règle de gestion : tranche nominale de 2% du portefeuille (modulée par ADR%, pyramiding jusqu'à 8% max par action en 4 tranches, plafond global 40%).
 - Horizon temporel : Swing trading multi-jours (holding minimum 1 jour pour éviter le Pattern Day Trading).
 - Positions déjà ouvertes en portefeuille : {recent_history}
 - Consignes de vigilance : {memory_summary}
@@ -82,10 +82,12 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
     Checklist d'audit obligatoire avant validation :
 1. CORRÉLATION SECTORIELLE : L'ajout de {symbol} crée-t-il une concentration excessive sur un même secteur par rapport aux positions déjà ouvertes ({recent_history}) ?
 2. CALENDRIER ENTREPRISE & MACRO : Y a-t-il une publication de résultats financiers (Earnings) sur {symbol} ou une annonce majeure (Fed, Banque du Canada, CPI) dans les prochaines 48h ?
-3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ : Si le marché global ({trend}) est baissier, un achat est autorisé **uniquement si le score technique est très élevé (>= 78/100)** et que le titre montre une force évidente. Si le volume relatif est faible (< 0.8x), réponds VETO.
-4. QUALITÉ DU RENFORCEMENT : S'il s'agit d'un pyramiding, le momentum justifie-t-il réellement d'augmenter la taille de la position ?
+3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ :
+   - Un volume relatif faible (< 0.8x de la moyenne 20j) est un signal insuffisant : si le volume est faible (< 0.8x), réponds VETO. Un volume confirmé (>= 0.8x) est favorable.
+   - Si le marché global ({trend}) est baissier, un achat est autorisé **uniquement si le score technique est élevé (>= 78/100)** avec volume confirmé (>= 0.8x) et force relative claire.
+4. QUALITÉ DU RENFORCEMENT : S'il s'agit d'un pyramiding, le momentum et le gain latent justifient-ils réellement d'augmenter la taille de la position ?
 
-    Règle de décision : Si l'un des 4 points présente un risque majeur, réponds VETO. Sinon, réponds VALIDÉ.
+    Règle de décision : Si l'un des 4 points présente un risque majeur ou un critère non respecté, réponds VETO. Sinon, réponds VALIDÉ.
 
     Format de réponse strict :
     DECISION: [VALIDÉ ou VETO]
@@ -127,7 +129,7 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
     print(f"\n💬 [Comité Gemini] : {gemini_reason}", flush=True)
     print(f"💬 [Comité OpenAI] : {openai_reason}", flush=True)
 
-    # Si les deux IA ont échoué techniquement, repli quantitatif local prudent (sans bloquer sur un bug réseau)
+    # Repli quantitatif local si aucune clé n'est configurée ou si les deux IA ont échoué
     if gemini_api_failed and openai_api_failed:
         if score >= 80 and "BAISSIER" not in str(trend).upper():
             return "VALIDÉ", "Repli quantitatif local : score >= 80 hors marché baissier (IA indisponibles)."
