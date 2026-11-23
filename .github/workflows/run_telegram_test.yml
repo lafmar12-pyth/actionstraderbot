@@ -1,0 +1,44 @@
+name: Run Telegram Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: "Quel test Telegram exécuter ?"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - alert_and_markdown
+          - ai_error_dedup
+
+jobs:
+  telegram-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run Telegram tests
+        env:
+          PYTHONUNBUFFERED: "1"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ inputs.test_suite }}" = "both" ] || [ "${{ inputs.test_suite }}" = "alert_and_markdown" ]; then
+            python test_telegram.py
+          fi
+          if [ "${{ inputs.test_suite }}" = "both" ] || [ "${{ inputs.test_suite }}" = "ai_error_dedup" ]; then
+            python test_telegram_ai_alert.py
+          fi
