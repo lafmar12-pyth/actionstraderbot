@@ -43,15 +43,17 @@ def _parse_ai_decision(text: str) -> str:
 
 
 def _query_gemini_with_retry(prompt, gemini_key, max_retries=3):
-    """Interroge Gemini avec gestion spécifique des timeouts 504/503."""
-    genai.configure(api_key=gemini_key)
-    g_model = genai.GenerativeModel("gemini-3.8-flash")
+    """Interroge Gemini via le SDK google-genai avec gestion des timeouts 504/503."""
+    client = genai.Client(
+        api_key=gemini_key,
+        http_options=types.HttpOptions(timeout=25000),
+    )
 
     for attempt in range(1, max_retries + 1):
         try:
-            g_resp = g_model.generate_content(
-                prompt,
-                request_options={"timeout": 25},
+            g_resp = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
             )
             text = (g_resp.text or "").strip()
             decision = _parse_ai_decision(text)
@@ -86,8 +88,8 @@ def ask_dual_ai_decision(symbol, price, score, reason, trend, recent_history, me
 1. CORRÉLATION SECTORIELLE : L'ajout de {symbol} crée-t-il une concentration excessive sur un même secteur par rapport aux positions déjà ouvertes ({recent_history}) ?
 2. CALENDRIER ENTREPRISE & MACRO : Y a-t-il une publication de résultats financiers (Earnings) sur {symbol} ou une annonce majeure (Fed, Banque du Canada, CPI) dans les prochaines 48h ?
 3. CONFIRMATION PAR LE VOLUME & LE MARCHÉ :
-   - Un volume relatif faible (< 0.8x de la moyenne 20j) est un signal insuffisant : si le volume est faible (< 0.8x), réponds VETO. Un volume confirmé (>= 0.8x) est favorable.
-   - Si le marché global ({trend}) est baissier, un achat est autorisé **uniquement si le score technique est élevé (>= 78/100)** avec volume confirmé (>= 0.8x) et force relative claire.
+  - Un volume relatif faible (< 0.8x de la moyenne 20j) est un signal insuffisant : si le volume est faible (< 0.8x), réponds VETO. Un volume confirmé (>= 0.8x) est favorable.
+  - Si le marché global ({trend}) est baissier, un achat est autorisé **uniquement si le score technique est élevé (>= 78/100)** avec volume confirmé (>= 0.8x) et force relative claire.
 4. QUALITÉ DU RENFORCEMENT : S'il s'agit d'un pyramiding, le momentum et le gain latent justifient-ils réellement d'augmenter la taille de la position ?
 
     Règle de décision : Si l'un des 4 points présente un risque majeur ou un critère non respecté, réponds VETO. Sinon, réponds VALIDÉ.
