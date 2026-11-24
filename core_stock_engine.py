@@ -4,7 +4,7 @@ import json
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, TrailingStopOrderRequest, GetOrdersRequest
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -22,6 +22,7 @@ MAX_LOSSES_IN_5_DAYS = 2
 MIN_NEW_ENTRY_SCORE = 72
 MIN_PYRAMID_SCORE = 82
 MAX_POSITIONS_PER_SECTOR = 2
+CUSHION_SPLIT_RATIO = 0.50  # 50% des bénéfices mis de côté dans le coussin 50/50
 
 SECTOR_MAP = {
     # Tech & Croissance
@@ -78,6 +79,8 @@ class StockSwingEngine:
             "last_run": None,
             "trades": [],
             "last_buy_dates": {},
+            "cushion_reserve": 0.0,
+            "cushion_history": [],
             "market_journal": {
                 "signals": [],
                 "stats": {"total_5d": 0, "wins_5d": 0},
@@ -91,6 +94,8 @@ class StockSwingEngine:
                     self.trade_history = loaded
                     self.trade_history.setdefault("trades", [])
                     self.trade_history.setdefault("last_buy_dates", {})
+                    self.trade_history.setdefault("cushion_reserve", 0.0)
+                    self.trade_history.setdefault("cushion_history", [])
                     journal = self.trade_history.setdefault(
                         "market_journal", {"signals": [], "stats": {"total_5d": 0, "wins_5d": 0}}
                     )
@@ -107,6 +112,34 @@ class StockSwingEngine:
         self.trade_history["last_run"] = datetime.now(timezone.utc).isoformat()
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(self.trade_history, f, indent=4, ensure_ascii=False)
+
+    def get_dual_accounts_summary(self, total_portfolio: float, current_invested: float) -> dict:
+        """Retourne les soldes du compte de trading actif et du coussin 50/50 mis à l'écart."""
+        cushion_reserve = max(0.0, float(self.trade_history.get("cushion_reserve", 0.0)))
+        active_capital = max(0.0, total_portfolio - cushion_reserve)
+        available_to_invest = max(0.0, (active_capital * self.max_capital_usage) - current_invested)
+        return {
+            "total_portfolio": round(total_portfolio, 2),
+            "cushion_reserve": round(cushion_reserve, 2),
+            "active_capital": round(active_capital, 2),
+            "current_invested": round(current_invested, 2),
+            "available_to_invest": round(available_to_invest, 2),
+        }
+
+    def print_dual_accounts_summary(self, total_portfolio: float, current_invested: float):
+        """Affiche en fin de cycle le compte de trading restant et le coussin 50/50."""
+        summary = self.get_dual_accounts_summary(total_portfolio, current_invested)
+        print("\n🏦 RÉCAPITULATIF DES 2 COMPTES (FIN DE CYCLE) :", flush=True)
+        print(
+            f"   • Compte Trading (capital actif) : {summary['active_capital']:.2f} $ "
+            f"(Investi : {summary['current_invested']:.2f} $ | Marge restante sous 40% : {summary['available_to_invest']:.2f} $)",
+            flush=True,
+        )
+        print(
+            f"   • Coussin 50/50 (réserve à l'écart) : {summary['cushion_reserve']:.2f} $ "
+            f"(Équité totale Alpaca : {summary['total_portfolio']:.2f} $)",
+            flush=True,
+        )
 
     def is_market_open(self):
         try:
@@ -246,16 +279,16 @@ class StockSwingEngine:
 
         return int(min(100, score)), " | ".join(reasons) if reasons else "Pas de signal", metrics
 
-    def compute_volatility_adjusted_tranche(self, df: pd.DataFrame, total_portfolio: float):
-        """Module la tranche nominale de 2% selon l'amplitude journalière moyenne sur 14 jours (ADR%)."""
+    def compute_volatility_adjusted_tranche(self, df: pd.DataFrame, active_capital: float):
+        """Module la tranche nominale de 2% (sur le capital actif) selon l'ADR% sur 14 jours."""
         base_pct = self.tranche_pct
         if df is None or len(df) < 14:
-            return total_portfolio * base_pct, base_pct * 100, 0.0
+            return active_capital * base_pct, base_pct * 100, 0.0
 
         recent = df.tail(14)
         valid = recent[recent["Close"] > 0]
         if valid.empty:
-            return total_portfolio * base_pct, base_pct * 100, 0.0
+            return active_capital * base_pct, base_pct * 100, 0.0
 
         adr_pct = float(((valid["High"] - valid["Low"]) / valid["Close"]).mean())
         if adr_pct > 0.035:
@@ -266,7 +299,7 @@ class StockSwingEngine:
             multiplier = 1.00
 
         adj_pct = base_pct * multiplier
-        return total_portfolio * adj_pct, adj_pct * 100, adr_pct * 100
+        return active_capital * adj_pct, adj_pct * 100, adr_pct * 100
 
     def _parse_iso_utc(self, iso_str):
         if not iso_str:
@@ -279,23 +312,43 @@ class StockSwingEngine:
         except Exception:
             return None
 
-    def _record_closed_trade(self, symbol: str, reason_tag: str, plpc: float, pl_dollars: float):
-        """Enregistre la clôture dans l'état, la mémoire récente et la bibliothèque consolidée."""
+    def _record_closed_trade(self, symbol: str, reason_tag: str, plpc: float, pl_dollars: float) -> float:
+        """Enregistre la clôture et prélève 50% des bénéfices nets dans le coussin 50/50."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cushion_added = 0.0
+
+        if pl_dollars > 0:
+            cushion_added = round(pl_dollars * CUSHION_SPLIT_RATIO, 2)
+            current_cushion = max(0.0, float(self.trade_history.get("cushion_reserve", 0.0)))
+            new_cushion = round(current_cushion + cushion_added, 2)
+            self.trade_history["cushion_reserve"] = new_cushion
+            self.trade_history.setdefault("cushion_history", []).append({
+                "date": now_iso,
+                "symbol": symbol,
+                "reason": reason_tag,
+                "trade_profit": round(pl_dollars, 2),
+                "cushion_added": cushion_added,
+                "cushion_total": new_cushion,
+            })
+
         self.trade_history.setdefault("trades", []).append({
-            "date": datetime.now(timezone.utc).isoformat(),
+            "date": now_iso,
             "type": "CLÔTURE",
             "reason": reason_tag,
             "symbol": symbol,
             "realized_plpc": round(plpc * 100, 2),
             "realized_pl": round(pl_dollars, 2),
+            "cushion_added": cushion_added,
         })
         self.library.record_closed_trade(symbol, plpc, pl_dollars, reason_tag=reason_tag)
         tag = "gagnante" if plpc > 0 else "perdante"
+        cushion_note = f" (Coussin 50/50 +{cushion_added:.2f}$)" if cushion_added > 0 else ""
         self.memory.add_lesson(
-            f"Clôture {tag} ({reason_tag}) à {plpc*100:+.2f}% ({pl_dollars:+.2f}$).",
+            f"Clôture {tag} ({reason_tag}) à {plpc*100:+.2f}% ({pl_dollars:+.2f}$){cushion_note}.",
             symbol=symbol,
             pnl_pct=plpc * 100.0,
         )
+        return cushion_added
 
     def compute_expectancy_stats(self) -> dict:
         """Calcule le win rate, le gain/perte moyen et l'espérance (%) sur les clôtures enregistrées."""
@@ -466,7 +519,7 @@ class StockSwingEngine:
             except Exception:
                 pass
 
-    def manage_open_positions(self, open_positions, total_portfolio):
+    def manage_open_positions(self, open_positions, active_capital):
         """Gère les sorties avec Stop-Loss dynamique (Break-Even) et protection Anti-PDT."""
         if not open_positions:
             return 0
@@ -480,7 +533,7 @@ class StockSwingEngine:
             unrealized_plpc = float(pos.unrealized_plpc)
             unrealized_pl = float(pos.unrealized_pl)
             market_value = float(pos.market_value)
-            weight_pct = (market_value / total_portfolio) * 100.0 if total_portfolio > 0 else 0.0
+            weight_pct = (market_value / active_capital) * 100.0 if active_capital > 0 else 0.0
             tranches_est = max(1, round(weight_pct / (self.tranche_pct * 100.0)))
 
             if tranches_est >= 3:
@@ -506,8 +559,11 @@ class StockSwingEngine:
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
                 self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
-                self._record_closed_trade(symbol, "TAKE-PROFIT", unrealized_plpc, unrealized_pl)
-                send_telegram_alert(f"🎯 *TAKE-PROFIT* sur `{symbol}` : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`)")
+                cushion_added = self._record_closed_trade(symbol, "TAKE-PROFIT", unrealized_plpc, unrealized_pl)
+                cushion_msg = f" | Coussin 50/50: `+{cushion_added:.2f}$`" if cushion_added > 0 else ""
+                send_telegram_alert(
+                    f"🎯 *TAKE-PROFIT* sur `{symbol}` : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`){cushion_msg}"
+                )
                 closed_count += 1
 
             elif unrealized_plpc <= dynamic_sl:
@@ -516,8 +572,11 @@ class StockSwingEngine:
                 self._cancel_open_orders_for_symbol(symbol)
                 self.trading_client.close_position(symbol)
                 self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
-                self._record_closed_trade(symbol, sl_type, unrealized_plpc, unrealized_pl)
-                send_telegram_alert(f"🛑 *{sl_type}* sur `{symbol}` (Palier {tranches_est}/4) : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`)")
+                cushion_added = self._record_closed_trade(symbol, sl_type, unrealized_plpc, unrealized_pl)
+                cushion_msg = f" | Coussin 50/50: `+{cushion_added:.2f}$`" if cushion_added > 0 else ""
+                send_telegram_alert(
+                    f"🛑 *{sl_type}* sur `{symbol}` (Palier {tranches_est}/4) : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`){cushion_msg}"
+                )
                 closed_count += 1
 
         return closed_count
@@ -532,27 +591,41 @@ class StockSwingEngine:
 
         account = self.trading_client.get_account()
         total_portfolio = float(account.equity)
-        nominal_tranche = total_portfolio * self.tranche_pct
-        max_per_stock_capital = total_portfolio * self.max_per_stock_pct
-        max_exposure_capital = total_portfolio * self.max_capital_usage
+        cushion_reserve = max(0.0, float(self.trade_history.get("cushion_reserve", 0.0)))
+        active_capital = max(0.0, total_portfolio - cushion_reserve)
+
+        nominal_tranche = active_capital * self.tranche_pct
+        max_per_stock_capital = active_capital * self.max_per_stock_pct
+        max_exposure_capital = active_capital * self.max_capital_usage
 
         open_positions = self.trading_client.get_all_positions()
-        if self.manage_open_positions(open_positions, total_portfolio) > 0:
+        if self.manage_open_positions(open_positions, active_capital) > 0:
             open_positions = self.trading_client.get_all_positions()
+            # Met à jour le coussin si un trade gagnant vient d'être clôturé
+            cushion_reserve = max(0.0, float(self.trade_history.get("cushion_reserve", 0.0)))
+            active_capital = max(0.0, total_portfolio - cushion_reserve)
+            nominal_tranche = active_capital * self.tranche_pct
+            max_per_stock_capital = active_capital * self.max_per_stock_pct
+            max_exposure_capital = active_capital * self.max_capital_usage
 
         open_orders = self.trading_client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
         pending_buy_symbols = {o.symbol for o in open_orders if o.side == OrderSide.BUY}
 
         positions_map = {pos.symbol: pos for pos in open_positions}
         current_invested = sum(float(pos.market_value) for pos in open_positions)
-        current_exposure_pct = (current_invested / total_portfolio) * 100.0 if total_portfolio > 0 else 0.0
+        current_exposure_pct = (current_invested / active_capital) * 100.0 if active_capital > 0 else 0.0
 
         market_trend = self.get_market_macro_trend()
         regime_tag = "HAUSSIER" if "HAUSSIER" in market_trend else ("BAISSIER" if "BAISSIER" in market_trend else "NEUTRE")
         today_str = now_utc.strftime("%Y-%m-%d")
 
         exp_stats = self.compute_expectancy_stats()
-        print(f"\n💰 Portefeuille : {total_portfolio:.2f} $ | Tranche nominale (2%) : {nominal_tranche:.2f} $", flush=True)
+        print(
+            f"\n💰 Compte Trading (actif) : {active_capital:.2f} $ | Coussin 50/50 : {cushion_reserve:.2f} $ "
+            f"(Équité Alpaca : {total_portfolio:.2f} $)",
+            flush=True,
+        )
+        print(f"💵 Tranche nominale (2% actif) : {nominal_tranche:.2f} $", flush=True)
         print(f"📊 Exposition globale : {current_invested:.2f} $ ({current_exposure_pct:.1f}% / 40.0% max)", flush=True)
         print(f"🌍 Météo Marché : {market_trend}", flush=True)
         if exp_stats["count"] > 0:
@@ -574,7 +647,7 @@ class StockSwingEngine:
 
                 current_price = float(df["Close"].iloc[-1])
                 score, reason, metrics = self.evaluate_stock_opportunity(df)
-                tranche_capital, adj_pct, adr_pct = self.compute_volatility_adjusted_tranche(df, total_portfolio)
+                tranche_capital, adj_pct, adr_pct = self.compute_volatility_adjusted_tranche(df, active_capital)
 
                 snapshots.append({
                     "symbol": symbol,
@@ -591,7 +664,7 @@ class StockSwingEngine:
 
                 existing_pos = positions_map.get(symbol)
                 current_stock_value = float(existing_pos.market_value) if existing_pos else 0.0
-                current_stock_pct = (current_stock_value / total_portfolio) * 100.0 if total_portfolio > 0 else 0.0
+                current_stock_pct = (current_stock_value / active_capital) * 100.0 if active_capital > 0 else 0.0
 
                 if not existing_pos:
                     print(f"   • {symbol:10} | Prix: {current_price:8.2f}$ | ADR14: {adr_pct:4.1f}% ({adj_pct:4.1f}%) | Score: {score:3}/100 | {reason}", flush=True)
@@ -659,12 +732,14 @@ class StockSwingEngine:
 
             if not best_choice:
                 print("😴 Aucun candidat ne passe les garde-fous pro actions et la bibliothèque (mode flat / maintien).", flush=True)
+                self.print_dual_accounts_summary(total_portfolio, current_invested)
                 self.save_state()
                 return
 
-            chosen_tranche = best_choice["tranche_capital"]
-            if (current_invested + chosen_tranche) > max_exposure_capital:
-                print(f"🛑 Plafond global de 40% atteint ({current_exposure_pct:.1f}%). Aucun nouvel achat.", flush=True)
+            chosen_tranche = round(float(best_choice["tranche_capital"]), 2)
+            if chosen_tranche <= 0 or (current_invested + chosen_tranche) > max_exposure_capital:
+                print(f"🛑 Plafond global de 40% atteint ({current_exposure_pct:.1f}%) ou capital actif insuffisant. Aucun nouvel achat.", flush=True)
+                self.print_dual_accounts_summary(total_portfolio, current_invested)
                 self.save_state()
                 return
 
@@ -673,61 +748,47 @@ class StockSwingEngine:
             enriched_memory = self._build_market_memory_summary(snapshots, target_symbol=clean_symbol, regime_tag=regime_tag)
 
             print(f"\n🧠 Soumission du dossier Swing {clean_symbol} [{action_label}] au comité multi-IA...", flush=True)
-
             decision, feedback = ask_dual_ai_decision(
-                clean_symbol,
-                best_choice["price"],
-                min(100, best_choice["score"]),
-                best_choice["reason"],
-                market_trend,
-                list(positions_map.keys()),
-                enriched_memory,
+                symbol=clean_symbol,
+                price=best_choice["price"],
+                score=best_choice["score"],
+                reason=best_choice["reason"],
+                trend=market_trend,
+                recent_history=list(positions_map.keys()),
+                memory_summary=enriched_memory,
             )
 
-            if decision == "VALIDÉ":
-                qty_to_buy = round(chosen_tranche / best_choice["price"], 2)
-                print(f"🔥 Exécution {action_label} Alpaca : +{qty_to_buy} actions de {clean_symbol} ({chosen_tranche:.2f}$ / {best_choice['adj_pct']:.1f}%)", flush=True)
+            if decision != "VALIDÉ":
+                print(f"🛡️ Ordre annulé pour {clean_symbol} : {feedback}", flush=True)
+                self.print_dual_accounts_summary(total_portfolio, current_invested)
+                self.save_state()
+                return
 
-                self._cancel_open_orders_for_symbol(clean_symbol)
-                market_order_data = MarketOrderRequest(
-                    symbol=clean_symbol, qty=qty_to_buy, side=OrderSide.BUY, time_in_force=TimeInForce.DAY
-                )
-                self.trading_client.submit_order(order_data=market_order_data)
-
-                whole_qty = int(qty_to_buy)
-                trail_pct = 1.5 if best_choice["tranche_num"] >= 2 else 3.0
-                if whole_qty >= 1:
-                    try:
-                        trailing_stop = TrailingStopOrderRequest(
-                            symbol=clean_symbol,
-                            qty=whole_qty,
-                            side=OrderSide.SELL,
-                            time_in_force=TimeInForce.GTC,
-                            trail_percent=trail_pct,
-                        )
-                        self.trading_client.submit_order(order_data=trailing_stop)
-                    except Exception as e:
-                        print(f"   ℹ️ Trailing Stop serveur non placé (géré par le bot) : {e}", flush=True)
-
-                self.trade_history["last_buy_dates"][clean_symbol] = today_str
-                self.trade_history["trades"].append({
-                    "date": now_utc.isoformat(),
-                    "type": action_label,
-                    "symbol": clean_symbol,
-                    "qty": qty_to_buy,
-                    "price": best_choice["price"],
-                    "allocated": round(chosen_tranche, 2),
-                    "tranche_pct_used": round(best_choice["adj_pct"], 2),
-                })
-
-                send_telegram_alert(
-                    f"📈 *{action_label}* : `+{qty_to_buy}` actions de `{clean_symbol}` à `{best_choice['price']:.2f}$` (`{best_choice['adj_pct']:.1f}%`)\n"
-                    f"• Palier cible : `{best_choice['tranche_num']}/4` (`8%` max/titre)\n"
-                    f"• Exposition globale : `{(current_invested + chosen_tranche)/total_portfolio*100:.1f}% / 40%`"
-                )
-            else:
-                print(f"🛡️ [VETO IA] Ordre annulé : {feedback}", flush=True)
+            order_req = MarketOrderRequest(
+                symbol=clean_symbol,
+                notional=chosen_tranche,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY,
+            )
+            order = self.trading_client.submit_order(order_req)
+            self.trade_history.setdefault("last_buy_dates", {})[clean_symbol] = today_str
+            self.trade_history.setdefault("trades", []).append({
+                "date": now_utc.isoformat(),
+                "type": "OUVERTURE",
+                "symbol": clean_symbol,
+                "notional": chosen_tranche,
+                "price": round(float(best_choice["price"]), 2),
+                "score": best_choice["score"],
+                "order_id": str(getattr(order, "id", "")),
+            })
+            current_invested += chosen_tranche
+            print(f"✅ Ordre d'achat soumis pour {clean_symbol} ({chosen_tranche:.2f}$ — {action_label}).", flush=True)
+            send_telegram_alert(
+                f"🚀 *ACHAT {action_label}* : `{clean_symbol}` à `{best_choice['price']:.2f}$` "
+                f"(`{chosen_tranche:.2f}$`, score `{best_choice['score']}/100`)"
+            )
         else:
-            print("😴 Aucun signal action n'atteint le seuil requis sur ce cycle.", flush=True)
+            print("\n😴 Aucun signal d'entrée ou de renforcement détecté sur ce cycle.", flush=True)
 
+        self.print_dual_accounts_summary(total_portfolio, current_invested)
         self.save_state()
