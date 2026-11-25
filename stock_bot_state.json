@@ -2,7 +2,7 @@
     "current_position": "AAPL",
     "entry_price": 351.85,
     "last_buy_dates": {},
-    "last_run": "2026-11-23T20:28:39.446748+00:00",
+    "last_run": "2026-11-25T15:34:31.610848+00:00",
     "trades": [],
     "market_journal": {
         "signals": [
@@ -253,11 +253,69 @@
                 "score": 90,
                 "regime": "BAISSIER",
                 "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "HD",
+                "price": 356.88,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "PG",
+                "price": 173.55,
+                "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "COST",
+                "price": 1090.73,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "DIS",
+                "price": 121.85,
+                "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "PEP",
+                "price": 144.63,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "KO",
+                "price": 98.07,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "WMT",
+                "price": 132.03,
+                "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
             }
         ],
         "stats": {
             "total_5d": 0,
             "wins_5d": 0
         }
-    }
+    },
+    "cushion_reserve": 0.0,
+    "cushion_history": []
 }
