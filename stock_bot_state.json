@@ -2,7 +2,7 @@
     "current_position": "AAPL",
     "entry_price": 351.85,
     "last_buy_dates": {},
-    "last_run": "2026-11-25T15:34:31.610848+00:00",
+    "last_run": "2026-11-25T17:44:47.192809+00:00",
     "trades": [],
     "market_journal": {
         "signals": [
@@ -307,6 +307,38 @@
                 "symbol": "WMT",
                 "price": 132.03,
                 "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "AAPL",
+                "price": 352.76,
+                "score": 100,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "CNI",
+                "price": 126.02,
+                "score": 100,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "V",
+                "price": 422.2,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-25",
+                "symbol": "MA",
+                "price": 654.87,
+                "score": 90,
                 "regime": "BAISSIER",
                 "evaluated_5d": false
             }
