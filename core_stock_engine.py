@@ -279,6 +279,35 @@ class StockSwingEngine:
 
         return int(min(100, score)), " | ".join(reasons) if reasons else "Pas de signal", metrics
 
+    def _check_early_risk_exit(self, symbol: str, unrealized_plpc: float, regime_tag: str) -> str | None:
+        """Détecte une dégradation technique ou macro sur une position ouverte avant le stop-loss de base."""
+        if unrealized_plpc >= 0:
+            return None
+        try:
+            df = self.get_historical_bars(symbol, calendar_days=60)
+            if len(df) < 22:
+                return None
+            sma20 = float(df["Close"].rolling(window=20).mean().iloc[-1])
+            avg_vol20 = float(df["Volume"].rolling(window=20).mean().iloc[-1])
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            close_now = float(last["Close"])
+            close_prev = float(prev["Close"])
+            vol_ratio = float(last["Volume"] / avg_vol20) if avg_vol20 > 0 else 1.0
+            _, wick_reason = self._candle_quality_penalty(df)
+
+            # 1. Cassure franche de SMA20 sur volume vendeur marqué alors que la position est en perte
+            if close_now < sma20 * 0.992 and vol_ratio >= 1.20 and unrealized_plpc <= -0.008:
+                return f"Cassure SMA20 sous volume {vol_ratio:.1f}x"
+
+            # 2. Repli marqué + rejet vendeur sur un titre déjà en perte sous régime baissier SPY
+            if regime_tag == "BAISSIER" and close_now < close_prev * 0.985 and unrealized_plpc <= -0.015:
+                extra = f" + {wick_reason}" if wick_reason else ""
+                return f"Repli baissier SPY + baisse titre{extra}"
+        except Exception:
+            return None
+        return None
+
     def compute_volatility_adjusted_tranche(self, df: pd.DataFrame, active_capital: float):
         """Module la tranche nominale de 2% (sur le capital actif) selon l'ADR% sur 14 jours."""
         base_pct = self.tranche_pct
@@ -519,8 +548,8 @@ class StockSwingEngine:
             except Exception:
                 pass
 
-    def manage_open_positions(self, open_positions, active_capital):
-        """Gère les sorties avec Stop-Loss dynamique (Break-Even) et protection Anti-PDT."""
+    def manage_open_positions(self, open_positions, active_capital, regime_tag="NEUTRE"):
+        """Gère les sorties avec Stop-Loss dynamique (Break-Even), sortie anticipée et protection Anti-PDT."""
         if not open_positions:
             return 0
 
@@ -554,6 +583,8 @@ class StockSwingEngine:
                 print(f"     ⏳ Position ouverte aujourd'hui ({today_str}) : maintien jusqu'à demain (Règle Swing / Anti-PDT).", flush=True)
                 continue
 
+            early_reason = self._check_early_risk_exit(symbol, unrealized_plpc, regime_tag)
+
             if unrealized_plpc >= self.take_profit_pct:
                 print(f"   🎯 TAKE-PROFIT atteint sur {symbol} ({unrealized_plpc*100:+.2f}%) -> Clôture !", flush=True)
                 self._cancel_open_orders_for_symbol(symbol)
@@ -579,6 +610,18 @@ class StockSwingEngine:
                 )
                 closed_count += 1
 
+            elif early_reason:
+                print(f"   ⚠️ SORTIE ANTICIPÉE sur {symbol} ({unrealized_plpc*100:+.2f}%) : {early_reason}", flush=True)
+                self._cancel_open_orders_for_symbol(symbol)
+                self.trading_client.close_position(symbol)
+                self.trade_history.get("last_buy_dates", {}).pop(symbol, None)
+                cushion_added = self._record_closed_trade(symbol, "SORTIE-ANTICIPÉE", unrealized_plpc, unrealized_pl)
+                cushion_msg = f" | Coussin 50/50: `+{cushion_added:.2f}$`" if cushion_added > 0 else ""
+                send_telegram_alert(
+                    f"⚠️ *SORTIE ANTICIPÉE* sur `{symbol}` : `{unrealized_plpc*100:+.2f}%` (`{unrealized_pl:+.2f}$`) — {early_reason}{cushion_msg}"
+                )
+                closed_count += 1
+
         return closed_count
 
     def run_cycle(self):
@@ -598,10 +641,13 @@ class StockSwingEngine:
         max_per_stock_capital = active_capital * self.max_per_stock_pct
         max_exposure_capital = active_capital * self.max_capital_usage
 
+        market_trend = self.get_market_macro_trend()
+        regime_tag = "HAUSSIER" if "HAUSSIER" in market_trend else ("BAISSIER" if "BAISSIER" in market_trend else "NEUTRE")
+        today_str = now_utc.strftime("%Y-%m-%d")
+
         open_positions = self.trading_client.get_all_positions()
-        if self.manage_open_positions(open_positions, active_capital) > 0:
+        if self.manage_open_positions(open_positions, active_capital, regime_tag=regime_tag) > 0:
             open_positions = self.trading_client.get_all_positions()
-            # Met à jour le coussin si un trade gagnant vient d'être clôturé
             cushion_reserve = max(0.0, float(self.trade_history.get("cushion_reserve", 0.0)))
             active_capital = max(0.0, total_portfolio - cushion_reserve)
             nominal_tranche = active_capital * self.tranche_pct
@@ -614,10 +660,6 @@ class StockSwingEngine:
         positions_map = {pos.symbol: pos for pos in open_positions}
         current_invested = sum(float(pos.market_value) for pos in open_positions)
         current_exposure_pct = (current_invested / active_capital) * 100.0 if active_capital > 0 else 0.0
-
-        market_trend = self.get_market_macro_trend()
-        regime_tag = "HAUSSIER" if "HAUSSIER" in market_trend else ("BAISSIER" if "BAISSIER" in market_trend else "NEUTRE")
-        today_str = now_utc.strftime("%Y-%m-%d")
 
         exp_stats = self.compute_expectancy_stats()
         print(
