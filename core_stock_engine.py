@@ -296,11 +296,9 @@ class StockSwingEngine:
             vol_ratio = float(last["Volume"] / avg_vol20) if avg_vol20 > 0 else 1.0
             _, wick_reason = self._candle_quality_penalty(df)
 
-            # 1. Cassure franche de SMA20 sur volume vendeur marqué alors que la position est en perte
             if close_now < sma20 * 0.992 and vol_ratio >= 1.20 and unrealized_plpc <= -0.008:
                 return f"Cassure SMA20 sous volume {vol_ratio:.1f}x"
 
-            # 2. Repli marqué + rejet vendeur sur un titre déjà en perte sous régime baissier SPY
             if regime_tag == "BAISSIER" and close_now < close_prev * 0.985 and unrealized_plpc <= -0.015:
                 extra = f" + {wick_reason}" if wick_reason else ""
                 return f"Repli baissier SPY + baisse titre{extra}"
@@ -379,18 +377,14 @@ class StockSwingEngine:
         )
         return cushion_added
 
-    def compute_expectancy_stats(self) -> dict:
-        """Calcule le win rate, le gain/perte moyen et l'espérance (%) sur les clôtures enregistrées."""
-        closed = [
-            t for t in self.trade_history.get("trades", [])
-            if t.get("type") == "CLÔTURE" and isinstance(t.get("realized_plpc"), (int, float))
-        ]
-        n = len(closed)
+    def _stats_for_closed_trades(self, closed_trades: list) -> dict:
+        """Calcule les statistiques clés pour une liste donnée de trades clôturés."""
+        n = len(closed_trades)
         if n == 0:
             return {"count": 0, "win_rate": 0.0, "avg_win": 0.0, "avg_loss": 0.0, "expectancy": 0.0}
 
-        wins = [t["realized_plpc"] for t in closed if t["realized_plpc"] > 0]
-        losses = [abs(t["realized_plpc"]) for t in closed if t["realized_plpc"] <= 0]
+        wins = [float(t["realized_plpc"]) for t in closed_trades if float(t["realized_plpc"]) > 0]
+        losses = [abs(float(t["realized_plpc"])) for t in closed_trades if float(t["realized_plpc"]) <= 0]
 
         p_win = len(wins) / n
         p_loss = len(losses) / n
@@ -405,6 +399,27 @@ class StockSwingEngine:
             "avg_loss": round(avg_loss, 2),
             "expectancy": round(expectancy, 2),
         }
+
+    def compute_expectancy_stats(self) -> dict:
+        """Calcule l'espérance globale ainsi que la comparaison STOP-LOSS vs SORTIE-ANTICIPÉE."""
+        closed = [
+            t for t in self.trade_history.get("trades", [])
+            if t.get("type") == "CLÔTURE" and isinstance(t.get("realized_plpc"), (int, float))
+        ]
+        stats = self._stats_for_closed_trades(closed)
+
+        early_trades = [t for t in closed if t.get("reason") == "SORTIE-ANTICIPÉE"]
+        sl_trades = [t for t in closed if t.get("reason") == "STOP-LOSS"]
+        be_trades = [t for t in closed if t.get("reason") == "BREAK-EVEN"]
+        tp_trades = [t for t in closed if t.get("reason") == "TAKE-PROFIT"]
+
+        stats["by_reason"] = {
+            "early_exit": self._stats_for_closed_trades(early_trades),
+            "stop_loss": self._stats_for_closed_trades(sl_trades),
+            "break_even": self._stats_for_closed_trades(be_trades),
+            "take_profit": self._stats_for_closed_trades(tp_trades),
+        }
+        return stats
 
     def check_sector_concentration(self, symbol: str, positions_map: dict, is_pyramid: bool) -> tuple[bool, str]:
         """Limite l'exposition simultanée à un même secteur pour éviter les paris corrélés."""
@@ -435,7 +450,6 @@ class StockSwingEngine:
             if t.get("type") == "CLÔTURE" and isinstance(t.get("realized_plpc"), (int, float))
         ]
 
-        # 1. Pause défensive sur les nouvelles entrées après >= 2 pertes en 5 jours
         if not is_pyramid:
             cutoff_5d = now_utc - timedelta(days=5)
             recent_losses_5d = 0
@@ -446,7 +460,6 @@ class StockSwingEngine:
             if recent_losses_5d >= MAX_LOSSES_IN_5_DAYS:
                 return False, f"Pause nouvelles entrées : {recent_losses_5d} clôture(s) perdante(s) en 5j."
 
-        # 2. Cooldown sur le titre après une clôture perdante
         cooldown_cutoff = now_utc - timedelta(days=COOLDOWN_DAYS_AFTER_LOSS)
         for t in reversed(closed_trades):
             if t.get("symbol") != symbol:
@@ -458,7 +471,6 @@ class StockSwingEngine:
                     return False, f"Cooldown actif sur {symbol} après perte ({t.get('realized_plpc'):+.2f}%) — ~{days_left:.1f}j restants."
             break
 
-        # 3. Cohérence avec l'espérance historique réalisée
         if not is_pyramid and exp_stats.get("count", 0) >= 4 and exp_stats.get("expectancy", 0.0) < -1.0 and score < 85:
             return False, f"Espérance historique négative ({exp_stats['expectancy']:+.2f}%) et score {score} < 85."
 
@@ -522,9 +534,20 @@ class StockSwingEngine:
             perf_str = f"Historique signaux ~5j en cours ({total_5d}/10 évalués)"
 
         exp_stats = self.compute_expectancy_stats()
+        by_reason = exp_stats.get("by_reason", {})
+        early_s = by_reason.get("early_exit", {})
+        sl_s = by_reason.get("stop_loss", {})
+        detail_sorties = ""
+        if early_s.get("count", 0) > 0 or sl_s.get("count", 0) > 0:
+            detail_sorties = (
+                f" [Sortie anticipée ({early_s.get('count', 0)}): perte moy. -{early_s.get('avg_loss', 0.0):.2f}%, "
+                f"esp. {early_s.get('expectancy', 0.0):+.2f}% | "
+                f"Stop-Loss ({sl_s.get('count', 0)}): perte moy. -{sl_s.get('avg_loss', 0.0):.2f}%, "
+                f"esp. {sl_s.get('expectancy', 0.0):+.2f}%]"
+            )
         exp_str = (
             f"Espérance trades clôturés ({exp_stats['count']}): {exp_stats['expectancy']:+.2f}% "
-            f"(Win {exp_stats['win_rate']:.1f}%, Gain moy. +{exp_stats['avg_win']:.2f}%, Perte moy. -{exp_stats['avg_loss']:.2f}%)"
+            f"(Win {exp_stats['win_rate']:.1f}%, Gain moy. +{exp_stats['avg_win']:.2f}%, Perte moy. -{exp_stats['avg_loss']:.2f}%){detail_sorties}"
             if exp_stats["count"] > 0 else "Espérance trades clôturés: aucun trade fermé"
         )
 
@@ -676,6 +699,17 @@ class StockSwingEngine:
                 f"| Win rate : {exp_stats['win_rate']:.1f}% | Gain moy. : +{exp_stats['avg_win']:.2f}% | Perte moy. : -{exp_stats['avg_loss']:.2f}%",
                 flush=True,
             )
+            by_reason = exp_stats.get("by_reason", {})
+            early_s = by_reason.get("early_exit", {})
+            sl_s = by_reason.get("stop_loss", {})
+            if early_s.get("count", 0) > 0 or sl_s.get("count", 0) > 0:
+                print(
+                    f"   ↳ Comparatif sorties : SORTIE-ANTICIPÉE ({early_s.get('count', 0)} trades, "
+                    f"perte moy. -{early_s.get('avg_loss', 0.0):.2f}%, esp. {early_s.get('expectancy', 0.0):+.2f}%) "
+                    f"vs STOP-LOSS ({sl_s.get('count', 0)} trades, "
+                    f"perte moy. -{sl_s.get('avg_loss', 0.0):.2f}%, esp. {sl_s.get('expectancy', 0.0):+.2f}%)",
+                    flush=True,
+                )
 
         candidates = []
         snapshots = []
