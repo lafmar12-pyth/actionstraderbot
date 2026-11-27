@@ -2,7 +2,7 @@
     "current_position": "AAPL",
     "entry_price": 351.85,
     "last_buy_dates": {},
-    "last_run": "2026-11-25T20:32:19.950945+00:00",
+    "last_run": "2026-11-27T15:28:30.972577+00:00",
     "trades": [],
     "market_journal": {
         "signals": [
@@ -12,7 +12,8 @@
                 "price": 348.5,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 2.85
             },
             {
                 "date": "2026-11-19",
@@ -20,7 +21,8 @@
                 "price": 517.56,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": -5.09
             },
             {
                 "date": "2026-11-19",
@@ -28,7 +30,8 @@
                 "price": 381.29,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 4.01
             },
             {
                 "date": "2026-11-19",
@@ -36,7 +39,8 @@
                 "price": 523.97,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": -22.34
             },
             {
                 "date": "2026-11-19",
@@ -44,7 +48,8 @@
                 "price": 124.04,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 1.51
             },
             {
                 "date": "2026-11-19",
@@ -52,7 +57,8 @@
                 "price": 407.73,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 5.79
             },
             {
                 "date": "2026-11-19",
@@ -60,7 +66,8 @@
                 "price": 633.54,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 5.38
             },
             {
                 "date": "2026-11-19",
@@ -68,7 +75,8 @@
                 "price": 337.35,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 6.51
             },
             {
                 "date": "2026-11-19",
@@ -76,7 +84,8 @@
                 "price": 168.16,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 2.81
             },
             {
                 "date": "2026-11-19",
@@ -84,7 +93,8 @@
                 "price": 138.66,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 4.06
             },
             {
                 "date": "2026-11-19",
@@ -92,7 +102,8 @@
                 "price": 95.69,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 1.53
             },
             {
                 "date": "2026-11-19",
@@ -100,7 +111,8 @@
                 "price": 125.57,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 4.98
             },
             {
                 "date": "2026-11-19",
@@ -108,7 +120,8 @@
                 "price": 257.19,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": -2.24
             },
             {
                 "date": "2026-11-20",
@@ -116,7 +129,8 @@
                 "price": 348.61,
                 "score": 100,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 2.81
             },
             {
                 "date": "2026-11-20",
@@ -124,7 +138,8 @@
                 "price": 496.97,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": -1.16
             },
             {
                 "date": "2026-11-20",
@@ -132,7 +147,8 @@
                 "price": 255.3,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": -1.52
             },
             {
                 "date": "2026-11-20",
@@ -140,7 +156,8 @@
                 "price": 124.99,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 0.74
             },
             {
                 "date": "2026-11-20",
@@ -148,7 +165,8 @@
                 "price": 634.82,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 5.17
             },
             {
                 "date": "2026-11-20",
@@ -156,7 +174,8 @@
                 "price": 344.44,
                 "score": 100,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 4.32
             },
             {
                 "date": "2026-11-20",
@@ -164,7 +183,8 @@
                 "price": 171.03,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 1.08
             },
             {
                 "date": "2026-11-20",
@@ -172,7 +192,8 @@
                 "price": 119.7,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 5.89
             },
             {
                 "date": "2026-11-20",
@@ -180,7 +201,8 @@
                 "price": 142.73,
                 "score": 100,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 1.09
             },
             {
                 "date": "2026-11-20",
@@ -188,7 +210,8 @@
                 "price": 97.19,
                 "score": 100,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": -0.04
             },
             {
                 "date": "2026-11-20",
@@ -196,7 +219,8 @@
                 "price": 130.02,
                 "score": 100,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 1.39
             },
             {
                 "date": "2026-11-20",
@@ -204,7 +228,8 @@
                 "price": 1362.52,
                 "score": 65,
                 "regime": "BAISSIER",
-                "evaluated_5d": false
+                "evaluated_5d": true,
+                "return_5d_pct": 2.22
             },
             {
                 "date": "2026-11-23",
@@ -341,11 +366,59 @@
                 "score": 90,
                 "regime": "BAISSIER",
                 "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-27",
+                "symbol": "TSLA",
+                "price": 396.58,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-27",
+                "symbol": "V",
+                "price": 431.33,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-27",
+                "symbol": "MA",
+                "price": 667.64,
+                "score": 90,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-27",
+                "symbol": "HD",
+                "price": 359.32,
+                "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-27",
+                "symbol": "PEP",
+                "price": 144.29,
+                "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
+            },
+            {
+                "date": "2026-11-27",
+                "symbol": "KO",
+                "price": 97.15,
+                "score": 75,
+                "regime": "BAISSIER",
+                "evaluated_5d": false
             }
         ],
         "stats": {
-            "total_5d": 0,
-            "wins_5d": 0
+            "total_5d": 25,
+            "wins_5d": 19
         }
     },
     "cushion_reserve": 0.0,
